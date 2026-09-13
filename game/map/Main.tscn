@@ -1,6 +1,6 @@
 [gd_scene load_steps=6 format=3 uid="uid://c711joqeud4pp"]
 
-[ext_resource type="Script" path="res://game/map/test.gd" id="1_ipcho"]
+[ext_resource type="Script" uid="uid://crkw210su1y0d" path="res://game/map/test.gd" id="1_ipcho"]
 [ext_resource type="PackedScene" uid="uid://b8fluhc5dx881" path="res://ui/ControlUI.tscn" id="2_bbqxi"]
 [ext_resource type="PackedScene" uid="uid://cy2dmwmamt8s7" path="res://game/map/mapTown/Town.tscn" id="4_utlai"]
 [ext_resource type="AudioStream" uid="uid://dd8rqtd44vwn1" path="res://audio/bgm/Cephalopod.mp3" id="7_ccb5j"]
