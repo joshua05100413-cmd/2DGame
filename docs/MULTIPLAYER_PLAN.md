@@ -127,6 +127,11 @@ autoload/net/
 `PlayerServer`、地图脚本、大厅 UI）会以标识符引用它们，而 GDScript 在
 **编译期**解析 autoload 名字。
 
+> ⚠️ **不要把说明写进 `project.godot` 的注释里。**
+> Godot 重写该项目文件时会丢弃所有它不认识的注释 —— 我们试过在 `[autoload]`
+> 段加一段解释顺序重要性的注释，一次导入之后就被删掉了。
+> 顺序的理由记在这里，改 `project.godot` 时请回来看这一节。
+
 ### 4.2 关键设计点
 
 - **后端无关的 peer id。** 房主的 peer id 在 ENet 下是 1，在 Steam 下是由

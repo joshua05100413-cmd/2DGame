@@ -54,6 +54,18 @@ jobs:
           export GODOT_EXE="${{ runner.tool_cache }}/godot/Godot_v${GODOT_VERSION}_linux.x86_64"
           "$GODOT_EXE" --version
 
+      # A fresh runner has no .godot/imported (it is gitignored), and without it
+      # every texture and audio load fails with "Make sure resources have been
+      # imported by opening the project in the editor at least once". Those
+      # failures cascade into script parse errors, so every suite fails for a
+      # reason that has nothing to do with the code. This is what broke run #1.
+      # verify.sh's import mode judges success by whether the cache appeared,
+      # because --import can exit non-zero even when the import succeeded.
+      - name: Import project assets
+        run: |
+          export GODOT_EXE="${{ runner.tool_cache }}/godot/Godot_v${GODOT_VERSION}_linux.x86_64"
+          bash tools/verify.sh 0 import
+
       # compile + net + coop + lobby + coopgame + steam
       - name: Run every headless suite
         run: |

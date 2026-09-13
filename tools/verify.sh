@@ -64,6 +64,17 @@ fi
 BASE_ARGS=(--headless --path "${PROJECT_DIR}" --log-file "${RUN_LOG}")
 AUDIT_EXTRA=""
 
+# A fresh checkout has no .godot/imported (it is gitignored). Without it every
+# texture and audio load fails with "Make sure resources have been imported by
+# opening the project in the editor at least once", and those failures cascade
+# into script parse errors -- so every suite fails for a reason that has nothing
+# to do with the code. This is exactly what broke the first CI run.
+# (--import may still exit non-zero even when the import succeeded, hence || true.)
+if [ "${MODE}" != "import" ] && [ ! -d "${PROJECT_DIR}/.godot/imported" ]; then
+    echo "==> no import cache found; importing project assets first (may take a minute)"
+    "${GODOT_EXE}" --headless --path "${PROJECT_DIR}" --import >/dev/null 2>&1 || true
+fi
+
 case "${MODE}" in
     import)
         ARGS=("${BASE_ARGS[@]}" --import)
@@ -115,6 +126,25 @@ echo "==> ${GODOT_EXE} ${ARGS[*]}"
 GODOT_RC=$?
 
 echo
+if [ "${MODE}" = "import" ]; then
+    # Import is not a test. On a first run --import's log legitimately contains
+    # resource errors, and Godot may still exit non-zero afterwards; neither
+    # means the import failed. The only meaningful check is whether the cache
+    # actually appeared.
+    if [ -f "${RUN_LOG}" ]; then
+        echo "--- ${RUN_LOG} ---"
+        cat "${RUN_LOG}"
+        echo "--- end log ---"
+    fi
+    echo
+    if [ -d "${PROJECT_DIR}/.godot/imported" ]; then
+        echo "RESULT: PASS - assets imported into .godot/imported"
+        exit 0
+    fi
+    echo "RESULT: FAIL - import produced no .godot/imported"
+    exit 1
+fi
+
 if [ ! -f "${RUN_LOG}" ]; then
     echo "RESULT: FAIL - Godot produced no log at ${RUN_LOG} (crashed before logging)"
     exit 1

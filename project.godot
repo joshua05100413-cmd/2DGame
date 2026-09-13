@@ -17,9 +17,6 @@ config/icon="res://icon.svg"
 
 [autoload]
 
-; Networking first: the rest of the game (LevelServer, PlayerServer, map
-; scripts, lobby UI) references Net/Coop by identifier, and GDScript resolves
-; autoload names at compile time, so they must already be registered.
 Net="*res://autoload/net/NetworkManager.gd"
 Coop="*res://autoload/net/CoopSession.gd"
 Utils="*res://autoload/Utils.gd"

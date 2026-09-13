@@ -92,6 +92,20 @@ REM --log-file must come BEFORE the "--" separator: anything after it is passed 
 REM the script as a user argument instead of being consumed by the engine.
 set "BASE_ARGS=--headless --path "%PROJECT_DIR%" --log-file "%RUN_LOG%""
 
+REM A fresh checkout has no .godot/imported (it is gitignored). Without it every
+REM texture and audio load fails with "Make sure resources have been imported by
+REM opening the project in the editor at least once", and those failures cascade
+REM into script parse errors -- so every suite fails for a reason that has
+REM nothing to do with the code. Import once, quietly, before running anything.
+REM (--import is known to crash at exit on some setups even when the import
+REM itself succeeded, so its exit code is deliberately ignored here.)
+if /i not "%MODE%"=="import" (
+    if not exist "%PROJECT_DIR%\.godot\imported" (
+        echo ==^> no import cache found; importing project assets first ^(may take a minute^)
+        "%GODOT_EXE%" --headless --path "%PROJECT_DIR%" --import >nul 2>&1
+    )
+)
+
 set "AUDIT_EXTRA="
 if /i "%MODE%"=="import" (
     set "GODOT_ARGS=%BASE_ARGS% --import"
@@ -143,6 +157,7 @@ echo ==^> godot %GODOT_ARGS%
 set "GODOT_RC=%ERRORLEVEL%"
 
 echo.
+if /i "%MODE%"=="import" goto :import_result
 if not exist "%RUN_LOG%" (
     echo RESULT: FAIL - Godot produced no log at %RUN_LOG% ^(crashed before logging^)
     exit /b 1
@@ -214,6 +229,23 @@ if "!FOUND!"=="1" (
 
 echo RESULT: PASS - no script/engine errors
 exit /b 0
+
+:import_result
+REM Import is not a test. On a first run --import's log legitimately contains
+REM resource errors, and Godot may still crash at exit afterwards; neither means
+REM the import failed. The only meaningful check is whether the cache appeared.
+if exist "%RUN_LOG%" (
+    echo --- %RUN_LOG% ---
+    type "%RUN_LOG%"
+    echo --- end log ---
+)
+echo.
+if exist "%PROJECT_DIR%\.godot\imported" (
+    echo RESULT: PASS - assets imported into .godot\imported
+    exit /b 0
+)
+echo RESULT: FAIL - import produced no .godot\imported
+exit /b 1
 
 :check
 findstr /c:%1 "%FILTERED%" >nul 2>&1
