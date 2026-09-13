@@ -1,0 +1,25 @@
+; Godot resource-scanner ignore marker.
+;
+; WHY THIS DIRECTORY IS IGNORED
+;   addons/godotsteam/ contains a GDExtension that was compiled for an older
+;   Godot. Godot 4.4 writes every *.gdextension it finds into
+;   .godot/extension_list.cfg and loads them during engine startup, BEFORE any
+;   game code runs. Loading that stale DLL crashes the engine:
+;
+;       CrashHandlerException: Program crashed with signal 11
+;       (right after "WorkerThreadPool: N threads")
+;
+;   Keeping the directory in the repository preserves the original binaries and
+;   the load order information, while this marker keeps the engine from ever
+;   touching them.
+;
+; HOW TO ENABLE STEAM NETWORKING (see docs/MULTIPLAYER_PLAN.md)
+;   1. Download a Godot 4.4-compatible GodotSteam GDExtension, e.g.
+;      https://codeberg.org/godotsteam/godotsteam/releases/tag/v4.17.1-gde
+;   2. Replace the binaries in win64/ (and add linux/ or osx/ if you ship them).
+;   3. Delete this .gdignore file.
+;   4. Re-open the project in the editor once so Godot rebuilds
+;      .godot/extension_list.cfg, then confirm Engine.has_singleton("Steam").
+;
+;   No game code needs to change: NetworkManager already detects the singleton
+;   at runtime and TransportFactory falls back to ENet when it is missing.

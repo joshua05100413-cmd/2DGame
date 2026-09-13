@@ -1,9 +1,27 @@
 # Godot 4+ specific ignores
 .godot/
 
-# Writable user:// root used by tools/run_headless.ps1 (shader cache, logs)
+# Writable user:// root used by tools/verify.bat (shader cache, logs)
 _userdata/
 
 # Crash dumps produced by the local test harness
 *.log
 crash-*.txt
+
+# Exported builds. export_presets.cfg writes to ../exe/Game.exe, but an old
+# build was committed to the repository root and it is ~100 MB. Never commit
+# build output: it bloats every clone forever and goes stale immediately.
+/Game.exe
+*.exe
+*.pck
+/export/
+/exe/
+
+# Third-party Steam emulators / DRM-bypass shims.
+# These replace steam_api64.dll and fake ownership checks. They are not part of
+# this project and must never enter the repo: test Steam with Valve's official
+# public test AppID 480 (Spacewar) instead. See docs/MULTIPLAYER_PLAN.md.
+steam_settings/
+ColdClientLoader*
+Goldberg*
+SmartSteamEmu*
