@@ -53,3 +53,31 @@ func _dump_steam_peer_api() -> void:
 			", ".join(args),
 			method.get("return", {}).get("type", TYPE_NIL),
 		])
+	_dump_steam_relay_api()
+
+
+## 打印 Steam 单例里和中继 / P2P 网络状态有关的方法。
+##
+## 为什么需要：Steam 的 P2P 连接依赖「中继网络就绪」，而 initRelayNetworkAccess()
+## 是**异步**的 —— 调用返回不代表就绪。连得太早会一直超时，且看不出原因。
+## 方法名和签名以真实二进制为准，不靠翻文档猜。
+func _dump_steam_relay_api() -> void:
+	if not Engine.has_singleton("Steam"):
+		return
+	var steam: Object = Engine.get_singleton("Steam")
+	print("[diag] --- Steam 里与中继 / 网络状态有关的方法 ---")
+	var keywords := ["relay", "network", "p2p", "socket", "connection"]
+	for method in steam.get_method_list():
+		var name := str(method.get("name", ""))
+		var lowered := name.to_lower()
+		var hit := false
+		for keyword in keywords:
+			if lowered.contains(keyword):
+				hit = true
+				break
+		if not hit or lowered.contains("get_") and lowered.contains("persona"):
+			continue
+		var args: Array = []
+		for argument in method.get("args", []):
+			args.append(str(argument.get("name", "?")))
+		print("[diag]   %s(%s)" % [name, ", ".join(args)])

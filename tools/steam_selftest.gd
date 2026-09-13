@@ -390,6 +390,9 @@ func _tick_invalid() -> void:
 				return 1
 		return null)
 	_timeout_probe = probe_client
+	# 真实超时是 20 秒，无头套件没必要白等 —— 但**必须**走实例上的
+	# connect_timeout_sec，而不是去改常量，否则测的就不是真实代码路径了。
+	probe_client.connect_timeout_sec = 2.0
 	var timeout_err: int = probe_client.join(str(FAKE_STEAM_ID), DEAD_PORT)
 	_check(timeout_err == OK, "超时用例的 join 调用本身应当成功发起")
 	_advance(Stage.TIMEOUT)
@@ -415,6 +418,12 @@ func _tick_timeout() -> void:
 	_say("[steam] 超时已被检出（第 %d 帧）：%s" % [_frames, _timeout_probe.last_error])
 	_check(_timeout_probe.last_error.contains("超时"),
 		"超时后应当给出可读原因，实际：" + _timeout_probe.last_error)
+	# 超时信息必须能区分「中继没就绪」和「对方没应答」——只写「超时」的话，
+	# 玩家和开发者都无从下手，这正是真机第一次失败时遇到的情况。
+	_check(_timeout_probe.last_error.contains("中继"),
+		"超时信息里应当带上中继状态，实际：" + _timeout_probe.last_error)
+	_check(_timeout_probe.last_error.contains("开房"),
+		"超时信息里应当提示对方是否已开房，实际：" + _timeout_probe.last_error)
 	_check(_timeout_probe.get_server_id() == 1,
 		"失败后 server id 应当回落到默认值")
 	_finish()

@@ -122,7 +122,58 @@ tools\setup_steam.bat
 
 ---
 
-## 4. 排查
+## 4. 连不上时怎么抓一份能查的日志
+
+**默认日志里什么都没有。** 直接跑游戏只会得到一句「Steam 连接超时」，两边日志都
+看不出原因 —— Steam 自己的连接诊断默认是关闭的
+（`SteamMultiplayerPeer` 的 `debug_level` 默认是 `NONE`）。
+
+所以联机失败时按这样跑，**两端都要**：
+
+```bat
+:: 第一端
+set APPDATA=D:\2DGame\_userdata\inst_a
+"D:\Godot\Godot_v4.4-stable_win64.exe\Godot_v4.4-stable_win64.exe" --path D:\2DGame -- --net-verbose
+```
+```bat
+:: 第二端（另开一个 cmd，APPDATA 必须不同，否则两个实例的日志会互相覆盖）
+set APPDATA=D:\2DGame\_userdata\inst_b
+"D:\Godot\Godot_v4.4-stable_win64.exe\Godot_v4.4-stable_win64.exe" --path D:\2DGame -- --net-verbose
+```
+
+日志落在各自的：
+
+```
+_userdata\inst_a\Godot\app_userdata\Don't Stop\logs\godot.log
+_userdata\inst_b\Godot\app_userdata\Don't Stop\logs\godot.log
+```
+
+打开 `--net-verbose` 之后会多出这些行，它们就是排查的全部依据：
+
+```
+[Steam] 本机 SteamID = 76561199372121221
+[Steam] 昵称 = Joshua约书亚
+[Steam] 目标 SteamID = 76561199563867700
+[Steam] 中继网络状态 = 等待中（2 Waiting）
+[Steam] 正在连接 SteamID 76561199563867700，超时 20 秒……
+[Steam] 连接中… 剩余 15 秒，中继 等待中（2 Waiting）
+```
+
+**怎么读**：
+
+| 看到什么 | 说明 |
+| --- | --- |
+| 房主端没有 `[Steam] 开房成功` | 房主根本没开成房，客户端连多久都会超时。房主端的状态栏也会有提示 |
+| 两端的 SteamID 对不上彼此的地址栏 | 填错了人。房主的 ID 要**从房主自己的状态栏复制**，不要从别处找 |
+| 中继一直是「等待中（2 Waiting）」 | Steam 中继还没就绪。多等几秒重试；一直如此就见下一条 |
+| 超过 20 秒仍停在 `CONNECTING` | 对方多半没在跑本游戏。确认对方那边**游戏是开着的**（Steam 上应显示「正在玩 Spacewar」） |
+
+> 顺带说明：`steam_appid.txt` 是 **480**，所以两端的 Steam 上都会显示在玩
+> **Spacewar**，这是 Valve 给所有开发者用的公开测试 AppID，属于正常现象。
+
+---
+
+## 5. 排查
 
 **「Steam P2P（不可用）」**
 把鼠标移到下拉框上，或看状态栏 —— 会给出具体原因，两种最常见：
@@ -143,13 +194,20 @@ tools\setup_steam.bat
 `steam_selftest` 会拿 `ClassDB` 里的真实方法表来交叉核对参数个数，
 所以这类错误应该在无头阶段就被挡住。
 
-**能开房但连不上**
-- SteamID 填错（必须是 17 位 64 位数字，不是好友代码、不是自定义 URL 名）。
-- 双方不在同一个 Steam 下载区时可能走不同中继，稍等重试。
-- 检查日志里有没有 `连接 Steam 主机 ... 失败`。
+**能开房但连不上（第一次真机测试最常遇到的）**
+先按 **第 4 节**抓两端的 `--net-verbose` 日志，再对着那张表看。按出现频率排：
+
+1. **对方其实没在开房。** 房主端必须有 `[Steam] 开房成功`；没有的话客户端连多久
+   都会超时。注意较早的版本 `create_host` 传错了参数，Steam 上**开房一定失败**，
+   所以两端代码必须是同一个提交。
+2. **SteamID 填错。** 必须是房主**开房后状态栏里显示的那串 17 位数字**。好友代码、
+   自定义 URL 名都不行。
+3. **对方没在跑这个游戏。** Steam 上要能看到对方「正在玩 Spacewar」。
+4. **中继一直没就绪。** 日志里 `中继 等待中（2 Waiting）` 持续到最后就是这种情况，
+   稍等重试有时就好。
 
 **大厅一直停在「已发起连接」**
-`SteamTransport` 的握手超时是 8 秒（`CONNECT_TIMEOUT_SEC`）。超时后状态会变
+`SteamTransport` 的握手超时是 20 秒（`CONNECT_TIMEOUT_SEC`）。超时后状态会变
 `FAILED` 并在大厅显示原因。如果一直不超时，说明 `poll()` 没被驱动到 ——
 检查 `NetworkManager._process` 是否在跑（节点 `process_mode` 是 `ALWAYS`）。
 
@@ -161,7 +219,7 @@ tools\setup_steam.bat
 
 ---
 
-## 5. 代码在哪
+## 6. 代码在哪
 
 不需要为了接 Steam 改任何游戏逻辑：
 

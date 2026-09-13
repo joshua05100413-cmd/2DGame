@@ -29,7 +29,15 @@ const STEAM_PEER_CLASS := "SteamMultiplayerPeer"
 ## Steam P2P 的虚拟端口，两端必须一致。
 const DEFAULT_VIRTUAL_PORT := 0
 ## 等待握手的最长时间。
-const CONNECT_TIMEOUT_SEC := 8.0
+##
+## 20 秒，不是 8 秒。Steam P2P 的**第一次**连接要先和中继 PoP 协商路径，跨网络时
+## 5-15 秒很常见；原来的 8 秒会把「慢」直接报成「失败」，而失败信息只有「超时」
+## 三个字，分不出是真连不上还是没等够。
+const CONNECT_TIMEOUT_SEC := 20.0
+## SteamMultiplayerPeer 的调试级别。
+## 枚举实测值：DEBUG_LEVEL_NONE = 0 / DEBUG_LEVEL_PEER = 1 / DEBUG_LEVEL_STEAM = 2。
+## **默认是 0**，也就是 Steam 自己的连接诊断一个字都不打印 —— 超时后完全无从查起。
+const PEER_DEBUG_LEVEL_STEAM := 2
 
 ## steamInit 的缓存状态。只缓存成功：失败不缓存，这样玩家中途把 Steam 启动
 ## 起来之后重试还能成功，而不是被一个几分钟前的失败结论永久挡住。
@@ -41,6 +49,8 @@ var _steam: Object = null
 var _peer: MultiplayerPeer = null
 var _pending: int = State.STOPPED
 var _connect_timer: float = -1.0
+## 上一次记录「连接中」日志时的剩余整秒数，用来把频率压到每秒一条。
+var _last_traced_second: int = -1
 ## 本会话中权威方的 peer id。
 var _server_id: int = 1
 ## 作为客户端时记录房主的 SteamID，用来反查它的 peer id。
@@ -63,9 +73,65 @@ var _peer_invoke: Callable = Callable()
 ## -1 = 按真实环境探测；0 = 强制不可用；1 = 强制可用。仅测试使用。
 var _availability_override: int = -1
 
+## 本次会话实际使用的握手超时。测试调短它，免得无头套件白等 20 秒。
+var connect_timeout_sec: float = CONNECT_TIMEOUT_SEC
+## 打开后把 Steam 侧的状态和连接过程写进日志。
+## 由 [NetworkManager] 从 `-- --net-verbose` 传进来。
+var verbose: bool = false
+
 
 func _init() -> void:
 	backend_name = "Steam P2P"
+
+
+## 写一条诊断日志，只在 verbose 打开时输出。
+func _trace(message: String) -> void:
+	if verbose:
+		print("[Steam] " + message)
+
+
+## 把 Steam 侧的身份与中继状态写进日志。
+##
+## 联机失败时这几行是唯一能分清「谁的账号对不上」和「中继没就绪」的依据：
+## 两边日志里的 SteamID 必须**互为对方的地址栏内容**，否则就是填错了人。
+func _trace_identity(target_id: int) -> void:
+	if not verbose:
+		return
+	_trace("本机 SteamID = %d" % local_steam_id())
+	_trace("昵称 = %s" % steam_persona_name())
+	if target_id != 0:
+		_trace("目标 SteamID = %d" % target_id)
+	_trace("中继网络状态 = %s" % relay_status_text())
+
+
+## 中继网络状态的可读文字。
+##
+## 注意 getRelayNetworkStatus() 返回的是 **int**（ESteamNetworkingAvailability），
+## 不是字典 —— 照着猜形状会一直读不到值。
+func relay_status_text() -> String:
+	if _steam == null or not _steam.has_method("getRelayNetworkStatus"):
+		return "未知（无法读取）"
+	var raw: Variant = _steam.call("getRelayNetworkStatus")
+	if not (raw is int):
+		return "未知（返回类型 %d）" % typeof(raw)
+	match int(raw):
+		100:
+			return "已就绪（100 Current）"
+		1:
+			return "从未尝试（1 NeverTried）"
+		2:
+			return "等待中（2 Waiting）"
+		3:
+			return "尝试中（3 Attempting）"
+		-100:
+			return "曾经可用、现已失效（-100 Previously）"
+		-101:
+			return "失败（-101 Failed）"
+		-102:
+			return "无法尝试（-102 CannotTry）"
+		-10:
+			return "重试中（-10 Retrying）"
+	return "状态 %d" % int(raw)
 
 
 # --- 可用性探测 ---------------------------------------------------------------
@@ -204,6 +270,8 @@ func host(_max_clients: int, _port: int) -> int:
 		last_error = "无法创建 %s 实例。" % STEAM_PEER_CLASS
 		_set_state(State.FAILED)
 		return ERR_CANT_CREATE
+	_configure_peer_debug(peer)
+	_trace_identity(0)
 
 	# SteamMultiplayerPeer.host_with_lobby() 需要大厅 id；合作生存用直连
 	# create_host 即可，玩家通过 SteamID 直接加入。
@@ -220,6 +288,7 @@ func host(_max_clients: int, _port: int) -> int:
 	last_error = ""
 	_install_peer(peer)
 	_set_state(State.HOSTING)
+	_trace("开房成功：权威 peer id = %d" % _server_id)
 	return OK
 
 
@@ -249,6 +318,9 @@ func join(address: String, _port: int) -> int:
 		last_error = "无法创建 %s 实例。" % STEAM_PEER_CLASS
 		_set_state(State.FAILED)
 		return ERR_CANT_CREATE
+	_configure_peer_debug(peer)
+	_trace_identity(steam_id)
+	_trace("正在连接 SteamID %d，超时 %.0f 秒……" % [steam_id, connect_timeout_sec])
 
 	var err := _peer_error(_invoke_peer(peer, &"create_client", [steam_id, DEFAULT_VIRTUAL_PORT]))
 	if err != OK:
@@ -263,7 +335,7 @@ func join(address: String, _port: int) -> int:
 	_install_peer(peer)
 	_set_state(State.STARTING)
 	_pending = State.CONNECTED
-	_connect_timer = CONNECT_TIMEOUT_SEC
+	_connect_timer = connect_timeout_sec
 	return OK
 
 
@@ -324,15 +396,24 @@ func poll() -> void:
 		MultiplayerPeer.CONNECTION_CONNECTING:
 			if _connect_timer > 0.0:
 				_connect_timer -= 1.0 / maxf(Engine.physics_ticks_per_second, 1.0)
+				# 每秒记一次中继状态：连不上时「中继一直没就绪」和「中继好了但对方
+				# 没应答」是两种完全不同的病，只看最终的超时信息分不出来。
+				if verbose and int(_connect_timer) != _last_traced_second:
+					_last_traced_second = int(_connect_timer)
+					_trace("连接中… 剩余 %.0f 秒，中继 %s" % [_connect_timer, relay_status_text()])
 				if _connect_timer <= 0.0:
-					last_error = "Steam 连接超时。请确认房主已开房、SteamID 正确、双方 Steam 在线。"
+					last_error = "Steam 连接超时（%.0f 秒）。中继：%s。" % [
+						connect_timeout_sec, relay_status_text()]
+					last_error += "请确认对方已经点了「开房」、SteamID 是对方**开房后状态栏显示的那串数字**，双方 Steam 都在线。"
 					close()
 					_set_state(State.FAILED)
 		MultiplayerPeer.CONNECTION_CONNECTED:
 			_connect_timer = -1.0
+			_last_traced_second = -1
 			if _pending == State.CONNECTED:
 				_pending = State.STOPPED
 				_set_state(State.CONNECTED)
+				_trace("已连接到房主，权威 peer id = %d" % _server_id)
 		MultiplayerPeer.CONNECTION_DISCONNECTED:
 			var was_client := _pending == State.CONNECTED or state == State.CONNECTED
 			_connect_timer = -1.0
@@ -364,6 +445,16 @@ func _create_peer() -> MultiplayerPeer:
 	# this project treats "inferred from Variant" warnings as errors.
 	var instance: Object = ClassDB.instantiate(STEAM_PEER_CLASS)
 	return instance as MultiplayerPeer
+
+
+## 打开 SteamMultiplayerPeer 自己的连接诊断。
+##
+## 默认级别是 DEBUG_LEVEL_NONE(0) —— 也就是说 Steam 那边为什么连不上，日志里
+## 一个字都不会出现。排查联机问题时把它打开，Steam 的握手/中继信息就会进日志。
+func _configure_peer_debug(peer: MultiplayerPeer) -> void:
+	if not verbose:
+		return
+	_invoke_peer(peer, &"set_debug_level", [PEER_DEBUG_LEVEL_STEAM])
 
 
 ## 让中继网络就绪。GodotSteam 里这个调用可能返回 void，也可能返回

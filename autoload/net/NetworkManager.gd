@@ -465,7 +465,13 @@ func _match_started(mode: int) -> void:
 func _create_transport() -> NetworkTransport:
 	if transport_factory.is_valid():
 		return transport_factory.call(backend) as NetworkTransport
-	return TransportFactory.create(backend)
+	var created := TransportFactory.create(backend)
+	# 把 --net-verbose 透给 Steam 传输层。Steam 那边有好几处只有打开它才会打印
+	# （本机 SteamID、目标 SteamID、中继状态、Steam 自己的连接诊断），
+	# 而联机失败时没有这些基本查不下去。
+	if created is SteamTransport:
+		created.verbose = verbose
+	return created
 
 
 func _stop_transport() -> void:
