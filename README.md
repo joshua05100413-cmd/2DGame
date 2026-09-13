@@ -22,3 +22,31 @@ some screenshots.
 Licence
 ---
 GNU General Public License
+
+---
+Multiplayer (co-op survival)
+---
+This fork adds a pluggable networking layer and host / direct-connect co-op on
+top of the original single-player game:
+
+* `Net` (`autoload/net/NetworkManager.gd`) owns the session and the authoritative
+  player roster; `Coop` (`autoload/net/CoopSession.gd`) owns gameplay replication.
+  Game code never talks to ENet or Steam directly.
+* Backends: **ENet** (IP direct connect, always available) and **Steam P2P**
+  (opt-in; needs a Godot 4.4-compatible GodotSteam GDExtension, see the docs).
+  An unavailable backend degrades gracefully instead of crashing.
+* Lobby UI: main menu -> `联机`.
+
+The host is authoritative for monsters, damage and level progress; clients
+predict their own character and report state back. Single-player behaviour is
+unchanged — every networking path is a no-op when no session is active.
+
+Design notes, the Godot 4.4 migration fixes, and the list of what is *not* synced
+yet live in [docs/MULTIPLAYER_PLAN.md](docs/MULTIPLAYER_PLAN.md).
+
+Headless verification (run from `cmd`, not PowerShell — see the docs):
+
+```bat
+tools\verify.bat 0 all
+```
+
