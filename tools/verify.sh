@@ -47,7 +47,7 @@ FRAMES="${1:-300}"
 MODE="${2:-driver}"
 
 if [ "${MODE}" = "all" ]; then
-    for suite in compile net coop lobby coopgame steam; do
+    for suite in compile net coop lobby coopgame monster steam; do
         # Invoke through bash explicitly: on Windows checkouts and in CI the
         # executable bit on this file is not guaranteed to survive.
         if ! bash "${BASH_SOURCE[0]}" 0 "${suite}"; then
@@ -101,6 +101,10 @@ case "${MODE}" in
     coopgame)
         ARGS=("${BASE_ARGS[@]}" --script res://tools/coop_game_selftest.gd)
         AUDIT_EXTRA="${REPORT_DIR}/coop_game_selftest.log"
+        ;;
+    monster)
+        ARGS=("${BASE_ARGS[@]}" --script res://tools/monster_attack_selftest.gd)
+        AUDIT_EXTRA="${REPORT_DIR}/monster_attack_selftest.log"
         ;;
     steam)
         ARGS=("${BASE_ARGS[@]}" --script res://tools/steam_selftest.gd)

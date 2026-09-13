@@ -109,6 +109,60 @@ func _verify_built() -> void:
 	_check(_lobby.selected_backend() == TransportFactory.all_backends()[0],
 		"选中的后端应当与下拉项对应")
 
+	_verify_layout()
+
+
+## 布局/可见性断言。
+##
+## 这些是补上的盲区：之前只断言「节点存在」，于是 set_anchors_preset 用错
+## （不设 offsets、控件尺寸为 0）时 26 项全绿，进游戏却什么都看不到；
+## 「返回」按钮被内容顶到屏幕外也一样测不出来。
+func _verify_layout() -> void:
+	var viewport_size := _lobby.get_viewport_rect().size
+	_say("[lobby] viewport 逻辑尺寸：" + str(viewport_size))
+
+	# 根节点必须真的有尺寸，否则整个大厅是隐形的。
+	_check(_lobby.size.x > 0.0 and _lobby.size.y > 0.0,
+		"大厅根节点必须有非零尺寸，实际 " + str(_lobby.size))
+	_check(_lobby.size.is_equal_approx(viewport_size),
+		"大厅根节点应当铺满 viewport，实际 " + str(_lobby.size))
+
+	var dim := _lobby.get_node_or_null("Dim") as ColorRect
+	_check(dim != null, "应当有遮罩层")
+	if dim != null:
+		_check(dim.size.x > 0.0 and dim.size.y > 0.0,
+			"遮罩必须有非零尺寸，实际 " + str(dim.size))
+
+	var panel := _lobby.get("_panel") as Panel
+	_check(panel != null and panel.size.x > 0.0 and panel.size.y > 0.0,
+		"面板必须有非零尺寸，实际 " + str(null if panel == null else panel.size))
+	if panel == null:
+		return
+
+	# 面板必须整个落在屏幕里，否则底部按钮会被切掉。
+	var panel_rect := Rect2(panel.global_position, panel.size)
+	var screen := Rect2(Vector2.ZERO, viewport_size)
+	_check(screen.encloses(panel_rect),
+		"面板应当完整位于屏幕内。面板 %s，屏幕 %s" % [str(panel_rect), str(screen)])
+
+	# 「返回」按钮曾经被内容顶到屏幕外，导致大厅关不掉。
+	var close_button: Button = null
+	for child in panel.get_children():
+		if child is Button and (child as Button).text == "返回":
+			close_button = child
+			break
+	_check(close_button != null, "面板上应当有「返回」按钮")
+	if close_button != null:
+		var rect := Rect2(close_button.global_position, close_button.size)
+		_say("[lobby] 「返回」按钮 rect：" + str(rect))
+		_check(rect.size.x > 0.0 and rect.size.y > 0.0,
+			"「返回」按钮必须有非零尺寸，实际 " + str(rect.size))
+		_check(screen.encloses(rect),
+			"「返回」按钮必须完整位于屏幕内（否则大厅关不掉）。按钮 %s，屏幕 %s" % [
+				str(rect), str(screen)])
+		# 再确认它真的能收到点击：面板中心和按钮中心都要落在可见区域内。
+		_check(close_button.is_visible_in_tree(), "「返回」按钮应当在可见树上")
+
 
 # --- 开房 / 断开 ---------------------------------------------------------------
 

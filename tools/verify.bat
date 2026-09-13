@@ -77,7 +77,7 @@ set "MODE=%~2"
 if "%MODE%"=="" set "MODE=driver"
 
 if /i "%MODE%"=="all" (
-    for %%M in (compile net coop lobby coopgame steam) do (
+    for %%M in (compile net coop lobby coopgame monster steam) do (
         call "%~f0" 0 %%M
         if errorlevel 1 (
             echo RESULT: FAIL - suite %%M failed
@@ -138,6 +138,11 @@ if /i "%MODE%"=="lobby" (
 if /i "%MODE%"=="coopgame" (
     set "GODOT_ARGS=%BASE_ARGS% --script res://tools/coop_game_selftest.gd"
     set "AUDIT_EXTRA=%REPORT_DIR%\coop_game_selftest.log"
+    goto :run
+)
+if /i "%MODE%"=="monster" (
+    set "GODOT_ARGS=%BASE_ARGS% --script res://tools/monster_attack_selftest.gd"
+    set "AUDIT_EXTRA=%REPORT_DIR%\monster_attack_selftest.log"
     goto :run
 )
 if /i "%MODE%"=="steam" (

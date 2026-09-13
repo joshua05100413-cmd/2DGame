@@ -1,5 +1,9 @@
 extends "res://game/monster/BaseMonster.gd"
 
+## 玩家角色所在的组。Hero.tscn 里已经声明为 ["hero"]，RemotePlayer 也会加入。
+## 怪物只攻击这个组里的东西 —— 见 _on_area_2d_body_entered 里的说明。
+const PLAYER_GROUP := "hero"
+
 var area_player = null
 ## 当前站在攻击范围内的所有玩家。
 ## 原版只记一个 body，多人时后进的人会顶掉先前的目标，而且先离开的那个会把
@@ -11,9 +15,13 @@ func _ready():
 	anim.play("idle")
 
 func _on_area_2d_body_entered(body):
-	# 远端队友在房主端是 RemotePlayer 代理，不是 Player，但同样必须能被打到，
-	# 所以这里按「能力」判定（有 onHit）而不是按具体类型。
-	if is_die || !body.has_method("onHit") || _targets.has(body):
+	# 只认玩家角色，而且必须按「组」判定，不能用能力判定。
+	#
+	# 这里踩过一次坑：为了让房主端的 RemotePlayer 代理也能被打到，曾经改成
+	# `body.has_method("onHit")`。但 BaseMonster 自己也有 onHit，于是怪物会把
+	# 彼此当成目标 —— 互相攻击、停在原地，反而放着玩家不管。
+	# Hero 在 ["hero"] 组里（Hero.tscn），RemotePlayer 也会加入同一个组。
+	if is_die || !body.is_in_group(PLAYER_GROUP) || _targets.has(body):
 		return
 	_targets.append(body)
 	_pick_target()

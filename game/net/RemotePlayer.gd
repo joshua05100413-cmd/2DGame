@@ -47,6 +47,9 @@ var _flip := false
 func _ready() -> void:
 	_build_visuals()
 	_build_collision()
+	# 怪物按 ["hero"] 组找目标（见 Monster2._on_area_2d_body_entered），
+	# 所以代理必须加入同一个组，否则房主端的怪物打不到远端队友。
+	add_to_group("hero")
 	global_position = _target
 
 
