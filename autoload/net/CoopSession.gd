@@ -190,14 +190,14 @@ func _clear_runtime_state() -> void:
 
 
 func _on_net_state_changed() -> void:
-	if not is_active():
+	# 会话结束（主动断开或掉线）：清掉复制出来的节点。
+	# 不清的话重连时 _player_nodes 里还留着旧条目，_reconcile_players 会以为
+	# 这些玩家已经生成过而跳过，结果就是重连后看不到任何人。
+	if not bool(_net().is_multiplayer_active()):
+		_clear_spawned_nodes()
 		return
 	if _is_host():
 		_reconcile_players()
-	else:
-		# 客户端断线或换房间时，把复制出来的节点清干净。
-		if not _net().is_multiplayer_active():
-			_clear_spawned_nodes()
 
 
 func _on_players_changed() -> void:

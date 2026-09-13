@@ -36,7 +36,7 @@ const MAX_FRAMES := 2400
 const SETTLE := 25
 const CLIENT_NAME := "ClientPlayer"
 
-enum Stage { CONNECTING, CLIENT_WORLD, LOAD_SCENE, HOST_WORLD, SPAWN_MONSTER, VERIFY, REATTACH, DONE }
+enum Stage { LOAD_SCENE, CONNECTING, CLIENT_WORLD, HOST_WORLD, SPAWN_MONSTER, VERIFY, REATTACH, DONE }
 
 
 # --- 客户端替身 ---------------------------------------------------------------
@@ -97,7 +97,7 @@ var _frames := 0
 var _stage_mark := 0
 var _finished := false
 var _pending_start := false
-var _stage: int = Stage.CONNECTING
+var _stage: int = Stage.LOAD_SCENE
 
 var _host_net: Node = null
 var _host_coop: Node = null
@@ -128,51 +128,34 @@ func _start() -> void:
 		_finish()
 		return
 
-	var err: int = _host_net.call("host_game", PORT, 8)
-	_check(err == OK, "房主开房应当成功，错误码 " + str(err))
-
-	# 客户端分支：独立 MultiplayerAPI + 独立 Net/Coop 实例。
-	var branch := Node.new()
-	branch.name = "ClientBranch"
-	root.add_child(branch)
-	_client_api = MultiplayerAPI.create_default_interface()
-	set_multiplayer(_client_api, branch.get_path())
-	_client_transport = ENetTransport.new()
-	_client_transport.set_multiplayer_api(_client_api)
-
-	_client_net = NetScript.new()
-	_client_net.name = "Net"
-	_client_net.set("transport_factory", func(_backend: int) -> NetworkTransport:
-		return _client_transport)
-	branch.add_child(_client_net)
-	_client_net.set("local_player_name", CLIENT_NAME)
-	_client_net.set("verbose", false)
-
-	_client_player_root = Node2D.new()
-	_client_player_root.name = "PlayerRoot"
-	branch.add_child(_client_player_root)
-	_client_monster_root = Node2D.new()
-	_client_monster_root.name = "MonsterRoot"
-	branch.add_child(_client_monster_root)
-
-	_client_coop = CoopScript.new()
-	_client_coop.name = "Coop"
-	branch.add_child(_client_coop)
-	_client_coop.set("net_override", _client_net)
-
-	var join_err: int = _client_net.call("join_game", "127.0.0.1", PORT)
-	_check(join_err == OK, "客户端加入应当成功，错误码 " + str(join_err))
-	_advance(Stage.CONNECTING)
+	# 关键顺序：先加载真实主场景，而且此时**还没有联机**。
+	# 这才是玩家的真实流程 —— 游戏先启动、主菜单出现，玩家之后才去开房。
+	# Town 和主菜单同属 Main.tscn，所以它的 _ready() 会在未联机时跑完，
+	# _setup_coop_world() 那一刻会直接返回。联机必须靠 Net.state_changed
+	# 的监听补挂，否则「普通模式」下的联机永远不会生效。
+	var packed: PackedScene = load(MAIN_SCENE)
+	_check(packed != null, "主场景应当能加载：" + MAIN_SCENE)
+	if packed == null:
+		_finish()
+		return
+	_main_scene = packed.instantiate()
+	_check(_main_scene != null, "主场景应当能实例化")
+	if _main_scene == null:
+		_finish()
+		return
+	root.add_child(_main_scene)
+	_say("[gcoop] 真实主场景已加载，此时尚未联机（第 %d 帧）" % _frames)
+	_advance(Stage.LOAD_SCENE)
 
 
 func _tick() -> void:
 	match _stage:
+		Stage.LOAD_SCENE:
+			_tick_load_scene()
 		Stage.CONNECTING:
 			_tick_connecting()
 		Stage.CLIENT_WORLD:
 			_tick_client_world()
-		Stage.LOAD_SCENE:
-			_tick_load_scene()
 		Stage.HOST_WORLD:
 			_tick_host_world()
 		Stage.SPAWN_MONSTER:
@@ -210,30 +193,61 @@ func _tick_client_world() -> void:
 	if _frames - _stage_mark < SETTLE:
 		return
 	_check(bool(_client_coop.call("is_active")), "客户端替身世界应当已生效")
-	_advance(Stage.LOAD_SCENE)
+	_advance(Stage.HOST_WORLD)
 
 
 func _tick_load_scene() -> void:
-	var packed: PackedScene = load(MAIN_SCENE)
-	_check(packed != null, "主场景应当能加载：" + MAIN_SCENE)
-	if packed == null:
-		_finish()
+	if _frames - _stage_mark < SETTLE:
 		return
-	_main_scene = packed.instantiate()
-	_check(_main_scene != null, "主场景应当能实例化")
-	if _main_scene == null:
-		_finish()
-		return
-	root.add_child(_main_scene)
-	_say("[gcoop] 真实主场景已加载（第 %d 帧）" % _frames)
-	_advance(Stage.HOST_WORLD)
+	# 还没联机：Town 不应该挂载 Coop 世界。
+	_check(_host_coop.get("world") == null,
+		"未联机时 Town 不应当挂载 Coop 世界")
+
+	# 现在开房 —— 等价于玩家在主菜单点了「开房」。
+	var host_err: int = _host_net.call("host_game", PORT, 8)
+	_check(host_err == OK, "房主开房应当成功，错误码 " + str(host_err))
+
+	# 客户端分支：独立 MultiplayerAPI + 独立 Net/Coop 实例。
+	var branch := Node.new()
+	branch.name = "ClientBranch"
+	root.add_child(branch)
+	_client_api = MultiplayerAPI.create_default_interface()
+	set_multiplayer(_client_api, branch.get_path())
+	_client_transport = ENetTransport.new()
+	_client_transport.set_multiplayer_api(_client_api)
+
+	_client_net = NetScript.new()
+	_client_net.name = "Net"
+	_client_net.set("transport_factory", func(_backend: int) -> NetworkTransport:
+		return _client_transport)
+	branch.add_child(_client_net)
+	_client_net.set("local_player_name", CLIENT_NAME)
+	_client_net.set("verbose", false)
+
+	_client_player_root = Node2D.new()
+	_client_player_root.name = "PlayerRoot"
+	branch.add_child(_client_player_root)
+	_client_monster_root = Node2D.new()
+	_client_monster_root.name = "MonsterRoot"
+	branch.add_child(_client_monster_root)
+
+	_client_coop = CoopScript.new()
+	_client_coop.name = "Coop"
+	branch.add_child(_client_coop)
+	_client_coop.set("net_override", _client_net)
+
+	var join_err: int = _client_net.call("join_game", "127.0.0.1", PORT)
+	_check(join_err == OK, "客户端加入应当成功，错误码 " + str(join_err))
+	_advance(Stage.CONNECTING)
 
 
 func _tick_host_world() -> void:
 	if _frames - _stage_mark < SETTLE * 2:
 		return
 	_check(bool(_host_coop.call("is_active")),
-		"真实场景加载后 Coop 世界应当已挂载")
+		"场景先加载、之后才开房时，Coop 世界也应当被挂上（靠 Net.state_changed 补挂）")
+	_check(_host_coop.get("world") != null,
+		"联机建立后 Town 应当已经持有 world 上下文")
 	_check(int(_host_coop.call("get_player_count")) == 2,
 		"房主端应有 2 个玩家节点，实际 " + str(_host_coop.call("get_player_count")))
 	_verify_host_players()

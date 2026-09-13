@@ -51,6 +51,9 @@ tools\verify.bat 300 game      :: 直接运行真实主场景
 
 **提 PR 前必须本地跑过 `all`**，CI 也会跑同一套。
 
+想看**怎么实际把游戏跑起来、怎么双开测联机**，看
+[`docs/TESTING.md`](docs/TESTING.md) —— 那里有完整的按钮流程和验收清单。
+
 ### 「假的绿」是被防着的
 
 `tools\verify.bat 60 selftest` 会故意注入一条 `SCRIPT ERROR`，**必须报 FAIL**。
@@ -70,6 +73,44 @@ CI 里也有这一步。如果哪天它变成 PASS，说明审计坏了 —— �
 - 提 PR 时写清楚：改了什么、为什么、**怎么验证的**（贴 `verify` 的输出）。
 - PR 至少一个人 review。涉及 `autoload/net/` 的改动建议两人 review。
 - 合并用 **Squash and merge**，保持 `main` 的历史可读。
+
+### 推送
+
+日常就一条：
+
+```bat
+git push
+```
+
+首次（仓库初始化之后只做一次）：
+
+```bat
+git push -u origin main
+git push -u origin feature/multiplayer
+```
+
+- `origin` = 本项目仓库，`upstream` = 上游原作者（用于吸收上游修复）。
+- 第一次推送时 Git Credential Manager 会弹 GitHub 登录窗，登录一次即可，
+  之后凭据会被缓存。
+
+> ⚠️ 本项目的历史被**重写过**（为了从历史里移除一个 100 MB 的 `Game.exe`），
+> 所以首次推送是全新历史，不是 fast-forward。
+> 如果远端仓库不是空的（例如建仓库时勾了 "Add a README"），推送会被拒绝。
+> 确认远端没有任何你需要的内容之后，可以：
+
+```bat
+git push -u origin main --force
+```
+
+> `--force` 会**覆盖远端历史**。只在确认远端没有你需要的东西时才用。
+
+新队友加入：
+
+```bat
+git clone https://github.com/joshua05100413-cmd/2DGame.git
+cd 2DGame
+tools\verify.bat 0 all
+```
 
 ---
 

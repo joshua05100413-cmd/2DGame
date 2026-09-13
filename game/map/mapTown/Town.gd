@@ -42,6 +42,21 @@ func _ready():
 	Utils.onGameStart.connect(self.onGameStart)
 	PlayerData.onPlayerDeath.connect(self.onPlayerDeath)
 	_setup_coop_world()
+	# Town 和主菜单同属 Main.tscn，所以 _ready() 跑的时候玩家通常还在主菜单、
+	# 还没开房或加入 —— 那一刻 _setup_coop_world() 会因为没联机而直接返回。
+	# 联机是之后才建立的，所以必须在这里再挂一次监听，否则「普通模式」下的
+	# 联机永远不会生效（雪地模式是切场景加载的，不受影响）。
+	if not Net.state_changed.is_connected(_on_net_state_changed):
+		Net.state_changed.connect(_on_net_state_changed)
+
+
+## 会话建立或断开时重试挂载世界。
+func _on_net_state_changed() -> void:
+	if Coop.world != null:
+		return
+	if not Net.is_multiplayer_active():
+		return
+	_setup_coop_world()
 
 
 ## 联机：把本关卡的复制容器交给会话层。单机时是空操作。
