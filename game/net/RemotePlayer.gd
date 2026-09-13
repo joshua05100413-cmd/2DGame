@@ -17,10 +17,17 @@ class_name RemotePlayer
 const INTERP_SPEED := 14.0
 ## 名字标签的显示高度（相对角色原点）。
 const LABEL_OFFSET := Vector2(0, -26)
-## 碰撞层级，必须与 Hero.tscn 保持一致：
-## 25 = 围墙(1) | 玩家(8) | 拾取(16)。怪物的 Area2D 用的是默认 mask，
-## 只有层级里含 bit0 才会被检测到，所以这里不能随便填。
-const PLAYER_COLLISION_LAYER := 25
+## 碰撞层级：**只占「玩家」层（bit3 = 8）**，不要用 Hero 的 25。
+##
+## Hero 的 CollisionShape2D 没有显式设置 collision_mask，默认是 1（bit0）。
+## 如果代理也放在 25（含 bit0），本地 Hero 就会把队友的代理当成实体障碍：
+## 被队友顶住、推着走，最后卡进地形里出不来。
+##
+## 放在 bit3 之后：
+##   * Hero（mask=1）检测不到代理 → 不会被挡住 ✓
+##   * 代理（mask=0）也不检测任何东西 ✓
+##   * 怪物的攻击 Area2D 额外加上 bit3，仍然打得到队友（见 Monster2.tscn）
+const PLAYER_COLLISION_LAYER := 8
 ## 代理不需要主动检测任何东西，它只是被检测方；位置完全由网络驱动，
 ## 所以 mask 留 0，免得被怪物的物理体推着走。
 const PLAYER_COLLISION_MASK := 0

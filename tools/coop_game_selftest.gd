@@ -272,6 +272,17 @@ func _verify_host_players() -> void:
 	if other != null:
 		_check(_script_path(other).ends_with("RemotePlayer.gd"),
 			"房主端客户端的节点应当是 RemotePlayer 代理，实际 " + _script_path(other))
+		# 代理必须和本地 Hero 处在**不同的层**上。
+		# Hero 的 CollisionShape2D 没设 collision_mask，默认是 1（bit0）；
+		# 代理如果也占 bit0，本地 Hero 就会把队友当成实体障碍 —— 实测会被
+		# 队友顶住推着走，最后卡进补给站里出不来。
+		_check((other.collision_layer & 1) == 0,
+			"远端玩家代理不能占用 bit0（Hero 的默认 mask），实际 layer=" + str(other.collision_layer))
+		_check((other.collision_layer & 8) != 0,
+			"远端玩家代理应当占用 bit3（玩家层，供怪物攻击 Area2D 检测），实际 layer=" + str(other.collision_layer))
+		if mine != null:
+			_check((mine.collision_mask & 8) == 0,
+				"本地 Hero 的 collision_mask 不应包含 bit3，否则会被队友代理阻挡，实际 mask=" + str(mine.collision_mask))
 		# 节点存在 ≠ 看得见。这里踩过 LobbyUI 的坑（26 项全绿但界面隐形），
 		# 所以远端代理必须验证到精灵这一层。
 		_check(other.visible and other.is_visible_in_tree(),
