@@ -1,15 +1,17 @@
 [configuration]
 entry_symbol = "godotsteam_init"
+; Required by Godot >= 4.2. This file shipped without it, which made the
+; extension fail to load with:
+;   ERROR: GDExtension configuration file must contain a
+;          "configuration/compatibility_minimum" key
+compatibility_minimum = "4.2"
 
 [libraries]
-macos.debug = "res://addons/godotsteam/osx/libgodotsteam.debug.dylib"
-macos.release = "res://addons/godotsteam/osx/libgodotsteam.dylib"
+; Trimmed to the platforms this project ships binaries for. The original file
+; also listed macOS/Linux entries, but the repo has no matching .dylib/.so
+; builds that load on modern Godot.
 windows.debug.x86_64 = "res://addons/godotsteam/win64/godotsteam.debug.dll"
 windows.release.x86_64 = "res://addons/godotsteam/win64/godotsteam.dll"
-linux.debug.x86_64 = "res://addons/godotsteam/linux/libgodotsteam.debug.so"
-linux.release.x86_64 = "res://addons/godotsteam/linux/libgodotsteam.so"
 
-[dependencies]
-macos.universal = { "res://addons/godotsteam/osx/libsteam_api.dylib": "" }
-windows.x86_64 = { "res://addons/godotsteam/win64/steam_api64.dll": "" }
-linux.x86_64 = { "res://addons/godotsteam/linux/libsteam_api.so": "" }
+[icons]
+Steam = "res://addons/godotsteam/icon.png"

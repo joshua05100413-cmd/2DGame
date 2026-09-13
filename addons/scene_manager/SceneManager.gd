@@ -44,7 +44,13 @@ func _ready() -> void:
 
 func _set_singleton_entities() -> void:
 	singleton_entities = {}
-	var entities = _current_scene.get_tree().get_nodes_in_group(
+	# At autoload time (and when running headless / with --script) there may be no
+	# current scene yet, so _current_scene can still be null here. Fall back to
+	# this node's own tree instead of dereferencing null.
+	var tree := _current_scene.get_tree() if is_instance_valid(_current_scene) else get_tree()
+	if tree == null:
+		return
+	var entities = tree.get_nodes_in_group(
 		SceneManagerConstants.SINGLETON_GROUP_NAME
 	)
 	for entity in entities:
