@@ -15,7 +15,22 @@ var audio_hit = AudioStreamPlayer2D.new()
 @onready var sprite_body = get_node("body")
 @onready var anim :AnimatedSprite2D = get_node("body/AnimatedSprite2D")
 
-var target_player:Player = Utils.player
+## 玩家角色所在的组。Hero.tscn 声明为 ["hero"]，RemotePlayer 代理也加入同一个组。
+const PLAYER_GROUP := "hero"
+
+## 当前追击目标。
+##
+## 原来是 `var target_player: Player = Utils.player` —— 写死了**本机**玩家。
+## 联机时房主端跑怪物 AI，而 Utils.player 在房主端永远是房主自己，于是所有怪物
+## 只追房主；客户端的角色只有自己撞进攻击范围时才会被打到。
+## 现在按「组」挑最近的活着的英雄，两端都算 —— 追谁由距离决定，不由「谁是本机」决定。
+##
+## 类型放宽成 Node2D：远端的队友在本端是 RemotePlayer 代理，类型对不上 Player。
+var target_player: Node2D = null
+## 重新挑目标的间隔（秒）。每帧遍历一次组没必要，怪物也不需要那么灵敏。
+const RETARGET_INTERVAL := 0.25
+var _retarget_accum := 0.0
+
 var state_array = []
 var hit = false
 var is_die = false
@@ -96,6 +111,15 @@ func _physics_process(delta):
 		_update_shadow(delta)
 		return
 	#if Engine.get_physics_frames() % 60 :
+	# 追击目标按距离选，不能写死本机玩家（见 target_player 的注释）。
+	#
+	# 必须放在下面那个 `is_atk` 提前 return **之前**：怪物攻击期间是不动的，
+	# 如果这时不更新目标，它会一直记着进场时的那个旧目标；等攻击结束、
+	# 玩家跑开之后才重新选，中间这段时间就会追错人。
+	_retarget_accum += delta
+	if _retarget_accum >= RETARGET_INTERVAL:
+		_retarget_accum = 0.0
+		_pick_chase_target()
 	if is_atk || is_die:
 		return
 	if hit:
@@ -115,6 +139,32 @@ func _physics_process(delta):
 			flip_h(true)
 	else:
 		anim.play("idle")
+
+## 从「hero」组里挑最近的、还活着的目标。
+##
+## 用组而不是 `Utils.player`：联机时房主端要同时把远端队友代理也算进候选，
+## 否则怪物只会追房主一个人。死了的玩家不再被追（否则怪物会围着尸体转）。
+func _pick_chase_target() -> void:
+	var nearest: Node2D = null
+	var best := INF
+	for candidate in get_tree().get_nodes_in_group(PLAYER_GROUP):
+		var node := candidate as Node2D
+		if node == null or not is_instance_valid(node):
+			continue
+		# 玩家死了就不再是追击目标。`is_dead` 只有 Player 有，代理没有，
+		# 所以用 get() 取；取不到或不是 bool 就当活着。
+		#
+		# 注意不能写 `bool(node.get("is_dead"))` —— GDScript 里对 Variant 调
+		# bool() 构造会报 "Nonexistent 'bool' constructor"，而且这条 SCRIPT ERROR
+		# 会被无头审计抓到，整个套件判失败。直接和 true 比就没事。
+		if node.get("is_dead") == true:
+			continue
+		var distance := global_position.distance_squared_to(node.global_position)
+		if distance < best:
+			best = distance
+			nearest = node
+	target_player = nearest
+
 
 func _on_velocity_computed(safe_velocity: Vector2) -> void:
 	if state_array.has(Utils.STATE_TYPE.STUN):

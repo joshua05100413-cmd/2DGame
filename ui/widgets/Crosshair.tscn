@@ -32,6 +32,7 @@ offset_right = 20.0
 offset_bottom = 19.0
 scale = Vector2(0.8, 0.8)
 pivot_offset = Vector2(12, 12)
+mouse_filter = 2
 texture = ExtResource("1_ypqcj")
 expand_mode = 1
 script = ExtResource("2_2cupp")

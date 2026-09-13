@@ -26,7 +26,7 @@ const SETTLE := 10
 ## 让怪物有时间追上来并打中几次。
 const OBSERVE_FRAMES := 600
 
-enum Stage { LOAD, SPAWN, OBSERVE, TWO_MONSTERS, VERIFY_PAIR, DONE }
+enum Stage { LOAD, SPAWN, OBSERVE, TWO_MONSTERS, VERIFY_PAIR, NEAREST, DONE }
 
 var _log: FileAccess = null
 var _failures: Array[String] = []
@@ -42,6 +42,8 @@ var _monster_root: Node = null
 var _player: Node2D = null
 var _monster: Node = null
 var _monster_b: Node = null
+var _decoy: Node2D = null
+var _player_saved_position := Vector2.ZERO
 var _hp_before := 0
 var _monster_hp_before := 0
 
@@ -80,6 +82,8 @@ func _tick() -> void:
 			_tick_two_monsters()
 		Stage.VERIFY_PAIR:
 			_tick_verify_pair()
+		Stage.NEAREST:
+			_tick_nearest()
 		Stage.DONE:
 			pass
 
@@ -110,7 +114,10 @@ func _tick_spawn() -> void:
 	_monster_root.add_child(_monster)
 	_hp_before = _read_hp()
 	_say("[atk] 已生成怪物，玩家血量 %d，位置 %s" % [_hp_before, str(_player.global_position)])
-	_advance(Stage.OBSERVE)
+	# 先做「追最近的人」探测，**再**进 OBSERVE。
+	# 顺序很关键：OBSERVE 阶段怪物会把玩家打死，而死亡面板会暂停整棵树，
+	# 怪物的 _physics_process 随即停摆 —— 那时候再探测只会量到一个冻结的旧目标。
+	_advance(Stage.NEAREST)
 
 
 func _tick_observe() -> void:
@@ -176,6 +183,54 @@ func _tick_verify_pair() -> void:
 	_check(monster_hp == _monster_hp_before,
 		"怪物之间不应该互相掉血（%d -> %d）" % [_monster_hp_before, monster_hp])
 	_finish()
+
+
+## 追击目标必须按距离选，不能写死本机玩家。
+##
+## 这条防的是真机报的「怪物只主动追房主」：BaseMonster 原来写的是
+## `var target_player: Player = Utils.player`，而房主端跑怪物 AI 时
+## Utils.player 永远是房主自己 —— 于是所有怪物只追房主，队友只有撞进攻击范围
+## 才会被打到。
+##
+## 做法：在怪物旁边放一个**更近的** hero 组成员（模拟远端队友代理），
+## 跑够重新选目标的间隔，然后要求 target_player 变成它。
+func _setup_nearest_probe() -> void:
+	# 记下玩家原位，探测完要放回去 —— 后面的 OBSERVE 依赖「怪物就在玩家旁边」。
+	_player_saved_position = _player.global_position
+	# 把真实玩家挪远，避免「谁更近」出现歧义。
+	_player.global_position = _monster.global_position + Vector2(400, 0)
+	var decoy := CharacterBody2D.new()
+	decoy.name = "DecoyAlly"
+	decoy.add_to_group("hero")
+	# 摆在怪物正旁边，明显比真实玩家近。
+	decoy.global_position = _monster.global_position + Vector2(4, 0)
+	_monster_root.add_child(decoy)
+	_decoy = decoy
+func _tick_nearest() -> void:
+	if _decoy == null:
+		_setup_nearest_probe()
+		_stage_mark = _frames
+		return
+	# RETARGET_INTERVAL 是 0.25 秒，60Hz 下 15 帧；多给几帧余量。
+	if _frames - _stage_mark < 40:
+		return
+	# 先把候选和距离打出来 —— 失败时这比一句「目标不对」有用得多。
+	for candidate in get_nodes_in_group("hero"):
+		var node := candidate as Node2D
+		if node == null:
+			continue
+		_say("[atk]   候选 hero=%s  距离=%.1f  is_dead=%s" % [
+			node.name, _monster.global_position.distance_to(node.global_position),
+			str(node.get("is_dead"))])
+	var target: Variant = _monster.get("target_player")
+	_say("[atk]   怪物选中的目标 = " + str(target))
+	_check(target == _decoy,
+		"怪物应当追距离更近的队友，而不是写死的本机玩家。实际目标：%s" % str(target))
+	if _decoy != null and is_instance_valid(_decoy):
+		_decoy.queue_free()
+	# 复原玩家位置，交给后面的 OBSERVE 阶段。
+	_player.global_position = _player_saved_position
+	_advance(Stage.OBSERVE)
 
 
 func _read_hp() -> int:

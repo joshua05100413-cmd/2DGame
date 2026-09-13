@@ -44,6 +44,9 @@ signal pickup_claimed(net_id: int, by_peer: int)
 signal local_player_damaged(amount: float)
 ## 关卡共享状态（关卡号/剩余时间/击杀/金币）发生变化。
 signal level_state_changed()
+## 房主宣布推进关卡（所有端都会收到，含房主自己）。
+## 参数是目标传送门的节点名；各端按名字从 "Portal" 组里找，再挪自己的玩家。
+signal level_advanced(portal_name: String)
 
 ## 玩家位置的上报/广播频率（秒）。
 const PLAYER_SYNC_INTERVAL := 0.05
@@ -572,6 +575,23 @@ func _sync_monster_hp(net_id: int, hp: float) -> void:
 	if node.has_method("apply_network_damage"):
 		# 客户端影子的血量直接对齐房主，不再二次扣减。
 		node.call("set_network_hp", hp)
+
+
+## 房主宣布推进关卡。只有房主该调它；其余端什么都不做，等 RPC 回来。
+##
+## 用 `call_local`，所以房主自己走的也是和客户端**完全相同**的一条路径 ——
+## 不需要在房主那边另写一份「本地直接挪」的分支，那种双分支正是传送到一半
+## 失效的温床。
+func advance_level(portal_name: String) -> void:
+	if not is_active() or not _is_host():
+		return
+	_advance_level.rpc(portal_name)
+
+
+@rpc("authority", "call_local", "reliable")
+func _advance_level(portal_name: String) -> void:
+	_trace_once("advance", "房主宣布推进关卡 -> " + portal_name)
+	level_advanced.emit(portal_name)
 
 
 ## 房主对某个玩家结算伤害（怪物攻击等），由该玩家的本机扣血。

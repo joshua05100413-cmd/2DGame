@@ -521,7 +521,44 @@ func _tick_match_start() -> void:
 	_host_net.call("start_match", 1)
 	# 客户端自己开局必须被拒（否则各端会进到不同的地图）。
 	_client_net.call("start_match", 2)
+	_verify_level_advance_authority()
 	_advance(Stage.LEVEL_STATE)
+
+
+## 推进关卡必须由房主宣布，客户端自己宣布要被忽略。
+##
+## 这条防的是一个真机踩到的回归：原来每个端各自监听传送门的「人齐」信号、
+## 各自挪自己的玩家，于是要求两端在同一时刻得出同样的结论。实测两个人一起进门
+## 时**只有后到的那个人会过去**。改成房主宣布一次、各端执行自己那部分之后，
+## 就不存在「两端判断不一致」这个失败模式了。
+##
+## 断言方式和大厅的 start_match 一样：房主宣布后两端都收到；客户端自己宣布
+## 则两端都不该收到。用信号计数，不依赖具体坐标。
+func _verify_level_advance_authority() -> void:
+	var portal_name := "Portal2"
+	var host_events: Array = []
+	var client_events: Array = []
+	var host_handler := func(name: String) -> void: host_events.append(name)
+	var client_handler := func(name: String) -> void: client_events.append(name)
+	_host_coop.level_advanced.connect(host_handler)
+	_client_coop.level_advanced.connect(client_handler)
+
+	# 房主宣布：两端都要收到（call_local 让房主自己也走同一条路径）。
+	_host_coop.call("advance_level", portal_name)
+	_check(host_events.has(portal_name),
+		"房主调用 advance_level 后，房主自己也应当收到 level_advanced")
+
+	# 客户端单方面宣布：必须被 _is_host() 挡下，两端都不该收到。
+	var before_host := host_events.size()
+	var before_client := client_events.size()
+	_client_coop.call("advance_level", "Portal3")
+	_check(host_events.size() == before_host,
+		"客户端自己宣布推进关卡时，房主端不应当收到")
+	_check(client_events.size() == before_client,
+		"客户端自己宣布推进关卡时必须被忽略")
+
+	_host_coop.level_advanced.disconnect(host_handler)
+	_client_coop.level_advanced.disconnect(client_handler)
 
 
 var _host_match_modes: Array = []

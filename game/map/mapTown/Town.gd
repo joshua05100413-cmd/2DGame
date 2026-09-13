@@ -54,6 +54,9 @@ func _ready():
 	# 联机永远不会生效（雪地模式是切场景加载的，不受影响）。
 	if not Net.state_changed.is_connected(_on_net_state_changed):
 		Net.state_changed.connect(_on_net_state_changed)
+	# 关卡推进由房主统一宣布，各端再挪**自己的**玩家（见 _on_portal_move_in）。
+	if not Coop.level_advanced.is_connected(_on_level_advanced):
+		Coop.level_advanced.connect(_on_level_advanced)
 
 
 ## 会话建立或断开时重试挂载世界。
@@ -191,11 +194,49 @@ func _on_shop_body_exited(body: Node2D) -> void:
 		shopBtn.visible = false
 
 #进入地图
+#
+# 联机时**不能**在这里直接挪自己的玩家。
+#
+# 原来的写法是两件事各端各做：每个端各自监听传送门的「人齐」信号，然后在信号
+# 回调里挪 `Utils.player`（= 本机的玩家）。这要求**两端在同一时刻得出同样的结论**。
+# 实测两个人一起进门时只有后到的那个人会过去 —— 先到的那一端没有在同样的时机
+# 触发，或者触发了却被别的时序盖掉，而两端谁也不知道对方判断成了什么。
+#
+# 关卡进程本来就是房主权威的（怪物生成、关卡号、计时都由房主决定），所以推进
+# 关卡也应该由房主宣布一次，各端收到后再执行自己那部分。这样就不存在
+# 「两端判断不一致」这个失败模式。
 func _on_portal_move_in(next_area):
 	if Utils.player.gun == null:
 		Utils.showToast("PLEASE PURCHASE A WEAPON FIRST")
-	else:
-		Utils.player.global_position = next_area.global_position
+		return
+	if Net.is_multiplayer_active():
+		# 只有房主宣布。客户端什么都不做，等 level_advanced 回来。
+		# 单机时下面那行照旧，行为与改动前完全一致。
+		if Coop.is_host():
+			Coop.advance_level(String(next_area.name))
+		return
+	Utils.player.global_position = next_area.global_position
+
+
+## 房主宣布推进关卡后，各端把**自己的**玩家挪到目标传送门。
+##
+## 用传球门**名字**而不是 NodePath：两端各自从 "Portal" 组里按名字找，
+## 不依赖两边的场景树路径完全一致。
+func _on_level_advanced(portal_name: String) -> void:
+	if Utils.player == null:
+		return
+	var target := _find_portal_by_name(portal_name)
+	if target == null:
+		push_warning("Town: 找不到名为 %s 的传送门，推进关卡失败。" % portal_name)
+		return
+	Utils.player.global_position = target.global_position
+
+
+func _find_portal_by_name(portal_name: String) -> Node2D:
+	for node in get_tree().get_nodes_in_group("Portal"):
+		if node is Node2D and String(node.name) == portal_name:
+			return node
+	return null
 
 #下一关通知
 func onNextLevel(level):

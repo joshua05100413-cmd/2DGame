@@ -1,8 +1,8 @@
 extends "res://game/monster/BaseMonster.gd"
 
 ## 玩家角色所在的组。Hero.tscn 里已经声明为 ["hero"]，RemotePlayer 也会加入。
-## 怪物只攻击这个组里的东西 —— 见 _on_area_2d_body_entered 里的说明。
-const PLAYER_GROUP := "hero"
+## 常量定义在 BaseMonster（父类）里，这里直接用继承来的，不要再声明一遍 ——
+## 重复声明会报 "The member PLAYER_GROUP already exists in parent class"。
 
 var area_player = null
 ## 当前站在攻击范围内的所有玩家。

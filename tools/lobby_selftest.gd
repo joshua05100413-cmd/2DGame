@@ -111,6 +111,28 @@ func _verify_built() -> void:
 
 	_verify_layout()
 	_verify_address_hint()
+	_verify_crosshair_ignores_mouse()
+
+
+## 准星必须完全忽略鼠标事件。
+##
+## 真的踩过：`TextureRect` 的 mouse_filter 默认是 STOP，而准星每帧把自己摆在
+## 光标正下方 —— 于是它正好压在每一个点击上面，点什么都变成点在准星上。
+## 症状是「死亡后复活键点不动」：按钮看得见，点击被准星截走了。
+##
+## 这条断言直接读场景实例的属性，不依赖任何 UI 流程。
+func _verify_crosshair_ignores_mouse() -> void:
+	var packed: PackedScene = load("res://ui/widgets/Crosshair.tscn")
+	if packed == null:
+		_check(false, "准星场景应当能加载")
+		return
+	var crosshair := packed.instantiate() as Control
+	if crosshair == null:
+		_check(false, "准星场景的根节点应当是 Control")
+		return
+	_check(crosshair.mouse_filter == Control.MOUSE_FILTER_IGNORE,
+		"准星必须设成 MOUSE_FILTER_IGNORE，否则它会吃掉所有点击。实际 %d" % crosshair.mouse_filter)
+	crosshair.free()
 
 
 ## 房主该报哪个地址给队友。
