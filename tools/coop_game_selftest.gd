@@ -57,7 +57,8 @@ class StubPlayer extends Node2D:
 		is_local = false
 		player_name = name
 
-	func apply_remote_state(pos: Vector2, _flip: bool) -> void:
+	## 签名必须和 RemotePlayer 的一致（含武器表现的两个可选参数）。
+	func apply_remote_state(pos: Vector2, _flip: bool, _gun_path: String = "", _aim: float = 0.0) -> void:
 		global_position = pos
 
 

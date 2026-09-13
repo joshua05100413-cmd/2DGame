@@ -39,6 +39,9 @@ const HERO_SCENE := preload("res://game/hero/Hero.tscn")
 
 ## Hero 的 SpriteFrames 只需要提取一次，之后所有远端代理共用。
 static var _shared_frames: SpriteFrames = null
+## 枪的视觉信息缓存：res:// 枪场景路径 -> {texture, offset, position}。
+## 每种枪只从场景里提取一次，之后所有代理共用。
+static var _gun_visuals: Dictionary = {}
 
 var peer_id := 0
 var player_name := ""
@@ -49,6 +52,11 @@ var _label: Label = null
 var _target := Vector2.ZERO
 var _has_target := false
 var _flip := false
+## 远端玩家手上的枪。
+var _gun_root: Node2D = null
+var _gun_sprite: Sprite2D = null
+var _gun_path := ""
+var _aim := 0.0
 
 
 func _ready() -> void:
@@ -68,8 +76,12 @@ func setup_remote_player(id: int, name: String) -> void:
 		_label.text = name
 
 
-## 由 CoopSession 调用：收到权威位置。
-func apply_remote_state(pos: Vector2, flip: bool) -> void:
+## 由 CoopSession 调用：收到权威位置与表现状态。
+##
+## [param gun_path] / [param aim] 是对方手上的枪：枪场景的 res:// 路径和朝向。
+## 武器本来完全没同步，症状是「互相看不到对方的武器」—— 代理只画了身体。
+## 两个参数有默认值，老的调用点不受影响。
+func apply_remote_state(pos: Vector2, flip: bool, gun_path: String = "", aim: float = 0.0) -> void:
 	_target = pos
 	if not _has_target:
 		# 第一次同步直接吸附，避免从出生点滑过去。
@@ -79,6 +91,10 @@ func apply_remote_state(pos: Vector2, flip: bool) -> void:
 		_flip = flip
 		if _body != null:
 			_body.scale.x = -1.0 if flip else 1.0
+	if gun_path != _gun_path:
+		_gun_path = gun_path
+		_apply_gun_visual()
+	_aim = aim
 
 
 func _process(delta: float) -> void:
@@ -90,6 +106,9 @@ func _process(delta: float) -> void:
 		var want := "run" if moving else "idle"
 		if _sprite.animation != want:
 			_sprite.play(want)
+	# 朝向直接照抄对方的枪角度，不本地猜（本机鼠标位置和对方没关系）。
+	if _gun_root != null and _gun_root.visible:
+		_gun_root.global_rotation = _aim
 
 
 ## 怪物攻击的落点。
@@ -134,6 +153,16 @@ func _build_visuals() -> void:
 			_sprite.play("idle")
 	_body.add_child(_sprite)
 
+	# 枪：挂在和 Hero 一样的层级（body 之下），这样身体的翻转会带着枪一起翻。
+	# 初始不可见，等第一次收到对方的武器路径再显示。
+	_gun_root = Node2D.new()
+	_gun_root.name = "GunRoot"
+	_gun_sprite = Sprite2D.new()
+	_gun_sprite.name = "Sprite2D"
+	_gun_root.add_child(_gun_sprite)
+	_gun_root.visible = false
+	_body.add_child(_gun_root)
+
 	_label = Label.new()
 	_label.name = "NameLabel"
 	_label.text = player_name
@@ -145,6 +174,52 @@ func _build_visuals() -> void:
 	# 名字不参与角色翻转，也不吃鼠标事件。
 	_label.scale = Vector2.ONE
 	add_child(_label)
+
+
+## 换枪：把对方的枪画出来。
+##
+## 只取枪场景里 Sprite2D 的贴图与偏移，**不实例化枪的逻辑**——直接 instantiate
+## 一把真枪会带上 BaseGun 的射击/计时器/子弹逻辑，那是一个远端代理绝对不该有的。
+func _apply_gun_visual() -> void:
+	if _gun_root == null:
+		return
+	if _gun_path.is_empty():
+		_gun_root.visible = false
+		return
+	var visual := _gun_visual_info(_gun_path)
+	if visual.is_empty():
+		_gun_root.visible = false
+		return
+	_gun_root.position = visual.get("position", Vector2.ZERO)
+	_gun_sprite.texture = visual.get("texture")
+	_gun_sprite.offset = visual.get("offset", Vector2.ZERO)
+	_gun_root.visible = true
+
+
+## 从枪场景里提取视觉信息并缓存。
+##
+## 实例化一个没进树的枪节点不会跑它的 _ready()，free() 时 Godot 会自动断开
+## _init 里连的信号，所以没有残留副作用 —— 和 _hero_frames() 是同一套做法。
+static func _gun_visual_info(scene_path: String) -> Dictionary:
+	if _gun_visuals.has(scene_path):
+		return _gun_visuals[scene_path]
+	var info := {}
+	if ResourceLoader.exists(scene_path):
+		var packed := load(scene_path) as PackedScene
+		if packed != null:
+			var gun := packed.instantiate()
+			if gun != null:
+				var sprite := gun.get_node_or_null("Sprite2D") as Sprite2D
+				var gun_node := gun as Node2D
+				if sprite != null and gun_node != null:
+					info = {
+						"texture": sprite.texture,
+						"offset": sprite.offset,
+						"position": gun_node.position,
+					}
+				gun.free()
+	_gun_visuals[scene_path] = info
+	return info
 
 
 ## 从 Hero 场景里取出 AnimatedSprite2D 的 SpriteFrames 并缓存。

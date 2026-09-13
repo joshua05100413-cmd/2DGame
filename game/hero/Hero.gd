@@ -110,7 +110,14 @@ func _physics_process(delta):
 		gun.look_at(get_global_mouse_position())
 		setGunLookat(get_global_mouse_position())
 	# 联机：上报本地位置与朝向。单机时 Coop 会直接忽略。
-	Coop.report_local_state(global_position, body.scale.x != 1)
+	# 武器表现也要一起上报：远端只有位置的话，对方屏幕上你永远是空手的。
+	# 传枪场景的 res:// 路径 + 当前朝向。没有枪就传空串，代理会把枪藏起来。
+	var gun_path := ""
+	var aim := 0.0
+	if gun != null and is_instance_valid(gun):
+		gun_path = gun.scene_file_path
+		aim = gun.global_rotation
+	Coop.report_local_state(global_position, body.scale.x != 1, gun_path, aim)
 
 func set_knockback(knockback_speed):
 	self.knockback_speed = knockback_speed

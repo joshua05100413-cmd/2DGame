@@ -163,7 +163,17 @@ func _timeout():
 	if level_time <= 0:
 		timerStop()
 		victory()
-		emit_signal("onRoundEnd")
+		# 联机时必须由房主**广播**回合结束，不能只发本地信号。
+		#
+		# 客户端根本不跑这个计时器（见 timerStart 提前 return），所以
+		# `onRoundEnd` 只在房主端发得出来。而 Town 收到它要做的是**本机的事**
+		# ——把自己的玩家挪回出发点、清掉本端的怪物。实测症状就是
+		# 「关卡结束时只有房主自动返回」，客户端还杵在原来的地方。
+		# 单机时维持原样，行为完全不变。
+		if Net.is_multiplayer_active():
+			Coop.broadcast_round_end()
+		else:
+			emit_signal("onRoundEnd")
 	else:
 		onMonsterCreate()
 		emit_signal("onTimeTick",int(level_time))

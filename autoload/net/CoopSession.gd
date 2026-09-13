@@ -47,6 +47,11 @@ signal level_state_changed()
 ## 房主宣布推进关卡（所有端都会收到，含房主自己）。
 ## 参数是目标传送门的节点名；各端按名字从 "Portal" 组里找，再挪自己的玩家。
 signal level_advanced(portal_name: String)
+## 房主宣布一回合结束（所有端都会收到，含房主自己）。
+##
+## 客户端**不跑**关卡计时器（见 LevelServer.timerStart），所以回合结束这件事
+## 只有房主知道。各端收到后各自把本机玩家挪回出发点并清场。
+signal round_ended()
 
 ## 玩家位置的上报/广播频率（秒）。
 const PLAYER_SYNC_INTERVAL := 0.05
@@ -316,27 +321,38 @@ func _clear_spawned_nodes() -> void:
 # --- 玩家状态同步 -------------------------------------------------------------
 
 ## 本机玩家每帧调用（由本地玩家节点驱动）。只有非权威端需要上报。
-func report_local_state(position: Vector2, flip: bool) -> void:
+##
+## [param gun_path] / [param aim] 是武器表现：远端代理要照着画对方手上的枪。
+## 武器本来完全没同步，症状就是「互相看不到对方的武器」。传的是枪场景的
+## res:// 路径（比传编号稳，不依赖 Utils.weapon_list 的键序），加一个朝向角度。
+## 两个参数都有默认值，老的调用点（含无头测试）不受影响。
+func report_local_state(position: Vector2, flip: bool, gun_path: String = "", aim: float = 0.0) -> void:
 	if not is_active():
 		_trace_once("report_inactive", "本机上报位置时 Coop 尚未激活，已忽略")
 		return
 	_trace_once("report_local", "本机开始上报位置")
+	var state := _make_player_state(position, flip, gun_path, aim)
 	if _is_host():
 		# 房主自己的位置直接进权威表，不必走网络。
-		_player_states[_net().get_unique_id()] = {"p": position, "flip": flip}
+		_player_states[_net().get_unique_id()] = state
 	else:
-		_report_player_state.rpc_id(_net().get_server_id(), position, flip)
+		_report_player_state.rpc_id(_net().get_server_id(), position, flip, gun_path, aim)
+
+
+## 玩家状态条目的唯一构造点 —— 房主本地、客户端上报、快照应用三处必须形状一致。
+static func _make_player_state(position: Vector2, flip: bool, gun_path: String, aim: float) -> Dictionary:
+	return {"p": position, "flip": flip, "gun": gun_path, "aim": aim}
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
-func _report_player_state(position: Vector2, flip: bool) -> void:
+func _report_player_state(position: Vector2, flip: bool, gun_path: String, aim: float) -> void:
 	if not _is_host():
 		return
 	# 用发送者 id 而不是参数里的 id，避免伪造别人的位置。
 	var sender := multiplayer.get_remote_sender_id()
 	if sender == 0:
 		return
-	_player_states[sender] = {"p": position, "flip": flip}
+	_player_states[sender] = _make_player_state(position, flip, gun_path, aim)
 
 
 ## 本端玩家节点构造时调用，让 Coop 知道自己该往哪写位置。
@@ -592,6 +608,25 @@ func advance_level(portal_name: String) -> void:
 func _advance_level(portal_name: String) -> void:
 	_trace_once("advance", "房主宣布推进关卡 -> " + portal_name)
 	level_advanced.emit(portal_name)
+
+
+## 房主宣布回合结束。只有房主该调它。
+##
+## 为什么必须广播：客户端根本不跑关卡计时器（LevelServer.timerStart 里直接
+## return），所以 `LevelServer.onRoundEnd` 只在房主端发出。而 Town.onRoundEnd
+## 干的是**本机的事**（把 Utils.player 挪回出发点、清场）—— 于是实测
+## 「关卡结束时只有房主自动返回」。和传送门那个 bug 是同一个形状：
+## 每端各做各的，却只有一个端知道该做了。
+func broadcast_round_end() -> void:
+	if not is_active() or not _is_host():
+		return
+	_round_end.rpc()
+
+
+@rpc("authority", "call_local", "reliable")
+func _round_end() -> void:
+	_trace_once("round_end", "房主宣布回合结束")
+	round_ended.emit()
 
 
 ## 房主对某个玩家结算伤害（怪物攻击等），由该玩家的本机扣血。
@@ -904,7 +939,11 @@ func _apply_player_states(snapshot: Dictionary) -> void:
 		_player_states[peer_id] = state
 		var node := get_player_node(peer_id)
 		if node != null and node.has_method("apply_remote_state"):
-			node.call("apply_remote_state", state.get("p", node.global_position), bool(state.get("flip", false)))
+			node.call("apply_remote_state",
+				state.get("p", node.global_position),
+				state.get("flip", false),
+				str(state.get("gun", "")),
+				float(state.get("aim", 0.0)))
 
 
 ## 取某个玩家最近的权威位置（房主与客户端都有）。

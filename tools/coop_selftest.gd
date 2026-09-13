@@ -30,6 +30,8 @@ const CoopScript := preload("res://autoload/net/CoopSession.gd")
 const PORT := 27223
 const MAX_FRAMES := 2400
 const SETTLE := 20
+## 测试用的假枪场景路径。用真实存在的一个，这样远端代理能真的提取出贴图。
+const GUN_PATH := "res://game/guns/Sniper.tscn"
 const HOST_NAME := "HostPlayer"
 const CLIENT_NAME := "ClientPlayer"
 const LATE_NAME := "LatePlayer"
@@ -46,6 +48,9 @@ class StubPlayer extends Node2D:
 	var player_name := ""
 	var applied_states := 0
 	var last_applied := Vector2.ZERO
+	## 最近一次收到的武器表现。断言「武器状态确实传到了远端代理」用。
+	var last_gun_path := ""
+	var last_aim := 0.0
 
 	func mark_as_local_player(id: int) -> void:
 		peer_id = id
@@ -56,9 +61,13 @@ class StubPlayer extends Node2D:
 		is_local = false
 		player_name = name
 
-	func apply_remote_state(pos: Vector2, _flip: bool) -> void:
+	## 签名必须和 RemotePlayer 的一致（含武器表现的两个可选参数），
+	## 否则 _apply_player_states 调用时会报 "Expected 2 arguments"。
+	func apply_remote_state(pos: Vector2, _flip: bool, gun_path: String = "", aim: float = 0.0) -> void:
 		applied_states += 1
 		last_applied = pos
+		last_gun_path = gun_path
+		last_aim = aim
 		global_position = pos
 
 
@@ -559,6 +568,46 @@ func _verify_level_advance_authority() -> void:
 
 	_host_coop.level_advanced.disconnect(host_handler)
 	_client_coop.level_advanced.disconnect(client_handler)
+	_verify_round_end_authority()
+
+
+## 回合结束同样必须由房主宣布。
+##
+## 防的是真机报的「关卡结束时只有房主自动返回」：客户端**不跑**关卡计时器
+## （LevelServer.timerStart 里对非房主直接 return），所以 `LevelServer.onRoundEnd`
+## 只在房主端发得出来。而 Town 收到它做的是本机的事（把自己的玩家挪回出发点），
+## 只发本地信号的话客户端永远收不到。
+func _verify_round_end_authority() -> void:
+	_round_host_events = []
+	_round_client_events = []
+	var host_handler := func() -> void: _round_host_events.append(true)
+	var client_handler := func() -> void: _round_client_events.append(true)
+	_host_coop.round_ended.connect(host_handler)
+	_client_coop.round_ended.connect(client_handler)
+
+	_host_coop.call("broadcast_round_end")
+	# 房主自己这一份是 call_local，同步就生效。
+	_check(_round_host_events.size() == 1,
+		"房主广播回合结束后，房主自己也应当收到一次 round_ended（call_local）")
+
+	# 客户端那一份要过帧才到，放到下一阶段再断言（见 _tick_level_state）。
+	# 客户端单方面宣布必须被挡下：这条同步就能判。
+	var before_host := _round_host_events.size()
+	_client_coop.call("broadcast_round_end")
+	_check(_round_host_events.size() == before_host,
+		"客户端自己宣布回合结束不应当让房主收到")
+
+
+## 客户端是否收到了房主广播的回合结束（过帧后检查）。
+func _verify_round_end_delivered() -> void:
+	_check(_round_client_events.size() == 1,
+		"房主广播回合结束后客户端应当收到 round_ended，实际 %d 次" % _round_client_events.size())
+	_say("[coop] round_ended 送达次数：房主 %d / 客户端 %d" % [
+		_round_host_events.size(), _round_client_events.size()])
+
+
+var _round_host_events: Array = []
+var _round_client_events: Array = []
 
 
 var _host_match_modes: Array = []
@@ -579,6 +628,8 @@ var _spawned_pickup_id := 0
 func _tick_level_state() -> void:
 	if not _settled():
 		return
+	# 上一阶段广播的回合结束，到这里应当已经送达客户端了。
+	_verify_round_end_delivered()
 	_check(int(_host_coop.call("get_pickup_count")) == 0,
 		"拾取后房主端应移除掉落物，实际 " + str(_host_coop.call("get_pickup_count")))
 	_check(int(_client_coop.call("get_pickup_count")) == 0,
@@ -648,12 +699,14 @@ func _tick_position_sync() -> void:
 		"重复上报拾取必须幂等，实际裁定次数 " + str(_pickup_claim_events))
 
 	# 房主把自己的位置写进权威表，Coop 会周期性广播给客户端。
-	_host_coop.call("report_local_state", Vector2(777, 333), true)
+	# 武器表现（枪场景路径 + 朝向）一起报：真实症状是「互相看不到对方的武器」，
+	# 代理只画了身体。这里断言这两项确实穿过了整条链路。
+	_host_coop.call("report_local_state", Vector2(777, 333), true, GUN_PATH, 1.25)
 	# 反过来也要成立：客户端上报位置后，**房主端**的代理节点必须跟着动。
 	# 曾经房主只广播、不把快照应用到本端（RPC 是 call_remote，房主自己不执行），
 	# 于是房主端的队友角色永远停在出生点 —— 症状就是「客户端看得到房主，
 	# 房主看不到客户端」这种单侧失灵。
-	_client_coop.call("report_local_state", Vector2(555, 222), false)
+	_client_coop.call("report_local_state", Vector2(555, 222), false, GUN_PATH, -0.5)
 	_advance(Stage.LATE_JOIN)
 
 
@@ -690,6 +743,11 @@ func _verify_position_sync() -> void:
 	_check(int(host_proxy.get("applied_states")) > 0, "客户端应当收到过房主的位置同步")
 	_check(Vector2(host_proxy.get("last_applied")).is_equal_approx(Vector2(777, 333)),
 		"客户端上的房主代理应移动到 (777,333)，实际 " + str(host_proxy.get("last_applied")))
+	# 武器表现也要到：缺了它对方屏幕上你永远是空手的。
+	_check(str(host_proxy.get("last_gun_path")) == GUN_PATH,
+		"客户端上的房主代理应当收到武器路径，实际 " + str(host_proxy.get("last_gun_path")))
+	_check(is_equal_approx(float(host_proxy.get("last_aim")), 1.25),
+		"客户端上的房主代理应当收到枪的朝向 1.25，实际 " + str(host_proxy.get("last_aim")))
 
 	# 反向：房主端的客户端代理也必须跟随客户端上报的位置。
 	var client_peer: int = int(_client_net.call("get_unique_id"))
@@ -699,6 +757,8 @@ func _verify_position_sync() -> void:
 		_say("[coop] 房主端的客户端代理 last_applied=" + str(host_sees_client.get("last_applied")))
 		_check(Vector2(host_sees_client.get("last_applied")).is_equal_approx(Vector2(555, 222)),
 			"房主端的客户端代理应移动到 (555,222)，实际 " + str(host_sees_client.get("last_applied")))
+		_check(str(host_sees_client.get("last_gun_path")) == GUN_PATH,
+			"房主端的客户端代理应当收到武器路径，实际 " + str(host_sees_client.get("last_gun_path")))
 
 
 func _start_late_joiner() -> void:
