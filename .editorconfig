@@ -1,0 +1,26 @@
+root = true
+
+# 全局规则：Godot 4 官方风格是 UTF-8 + LF。
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+# GDScript 用 Tab 缩进（Godot 官方风格，也是本项目现有代码的风格）。
+[*.gd]
+indent_style = tab
+indent_size = 4
+
+# Windows 批处理必须保持 CRLF，否则 cmd.exe 找不到 goto/call 的标签。
+# 说明见 .gitattributes 与 tools/verify.bat 顶部注释。
+[*.{bat,cmd}]
+end_of_line = crlf
+
+[*.sh]
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml,json,md}]
+indent_style = space
+indent_size = 2
