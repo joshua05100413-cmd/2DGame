@@ -57,6 +57,12 @@ func _ready():
 	# 关卡推进由房主统一宣布，各端再挪**自己的**玩家（见 _on_portal_move_in）。
 	if not Coop.level_advanced.is_connected(_on_level_advanced):
 		Coop.level_advanced.connect(_on_level_advanced)
+	# 回合结束同理：联机时 LevelServer **不再**发本地的 onRoundEnd（客户端根本
+	# 不跑关卡计时器），改由房主广播 Coop.round_ended。
+	# 这里漏了这条连接，就等于把唯一的通知路径删掉了 —— 实测症状是
+	# 「关卡结束后两个人都不返回出发点」，比修之前（只有客户端不返回）更糟。
+	if not Coop.round_ended.is_connected(onRoundEnd):
+		Coop.round_ended.connect(onRoundEnd)
 
 
 ## 会话建立或断开时重试挂载世界。

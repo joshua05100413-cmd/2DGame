@@ -435,7 +435,32 @@ func _tick_portal_verify() -> void:
 		return
 	_check(_portal.is_complete(),
 		"两端都到齐后传送门应当开放")
+	_verify_town_listens_to_coop()
 	_finish()
+
+
+## Town 必须真的**订阅**了 Coop 的这两条权威通知。
+##
+## 这条补的是一个代价很高的盲区：上一轮把「回合结束」从本地的
+## `LevelServer.onRoundEnd` 改成房主广播 `Coop.round_ended`，但 Town 侧忘了连线。
+## 原来的断言只验证了「信号发得出去」（coop_selftest 里数了两端的回调次数），
+## 没验证「有人接」—— 于是「只有客户端不返回出发点」被改成了
+## **「两个人都不返回」**，比修之前更糟。
+##
+## 直接查连接本身，不依赖任何运行时流程，是这类「接线漏了」最直接的守门方式。
+func _verify_town_listens_to_coop() -> void:
+	var town := _main_scene.get_node_or_null("Town")
+	_check(town != null, "应当能找到 Town 节点")
+	if town == null:
+		return
+	var coop := root.get_node_or_null(^"Coop")
+	_check(coop != null, "应当能拿到 Coop autoload")
+	if coop == null:
+		return
+	_check(coop.is_connected("level_advanced", Callable(town, "_on_level_advanced")),
+		"Town 必须订阅 Coop.level_advanced，否则房主推进关卡后没人挪自己的玩家")
+	_check(coop.is_connected("round_ended", Callable(town, "onRoundEnd")),
+		"Town 必须订阅 Coop.round_ended，否则关卡结束后没人返回出发点")
 
 
 var _portal: Node = null
