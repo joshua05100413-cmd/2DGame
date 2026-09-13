@@ -101,6 +101,11 @@ tools\setup_steam.bat
 3. 主菜单 → **联机** → 传输后端选 **Steam P2P**。
    选中时游戏才会去初始化 SteamAPI，状态栏会显示「Steam 已就绪」，
    名字输入框会填上你的 Steam 昵称。
+
+   > ⏳ **选中之后等大约 10 秒再让对方加入。** Steam 中继网络的初始化是异步的，
+   > 实测要 **9 秒**才从「等待中」变成「已就绪」（`Current`）。中继没就绪之前
+   > P2P 连接建立不起来。两端都是选中 Steam P2P 之后再等一等就没问题；
+   > 想确认状态就加 `-- --net-verbose`，日志里会打 `[Steam] 中继网络状态 = ...`。
 4. **房主**点「开房」。状态栏会直接写出房主的 64 位 SteamID：
 
    ```
@@ -192,6 +197,23 @@ _userdata\inst_b\Godot\app_userdata\Don't Stop\logs\godot.log
 - `未检测到 Steam 单例：未安装…` → 扩展没装，回去跑 `tools\setup_steam.bat`
 - `Steam 客户端未运行或未登录` → 先把 Steam 起起来再选后端
 
+**`SteamAPI 初始化失败（status=N，...）`**
+初始化现在用的是 `steamInitEx`，它会带回真实的失败原因，所以这条消息里
+`status` 和后面的文字才是重点。已知的一种：
+
+- `status=3` + `No SteamUtils011` → **Steam 客户端版本过旧**（Steamworks 接口对不上）。
+  先确认 Steam 能正常更新 —— 有些机器上会有一个把更新钉住的配置文件：
+
+  ```bat
+  dir "C:\Program Files (x86)\Steam\steam.cfg"
+  ```
+
+  如果它存在且里面有 `BootStrapperInhibitAll=Enable`，Steam 就不会自动更新，
+  接口版本会一直落后。删掉这一行（或整个文件）后重启 Steam 即可。
+
+  这个坑在没有 `verbal` 的时候是完全看不出来的 —— 只会得到一句
+  「初始化失败」，然后被误判成「扩展没装」或「网络不通」，能耗掉几个小时。
+
 **引擎一启动就 signal 11 / 堆损坏**
 历史上出现过一次，根因是**在 `SteamAPI_Init` 之前调用了需要初始化状态的 API**
 （`NetworkManager._ready()` 里读了 `getPersonaName()`），日志里只有一行
@@ -255,9 +277,33 @@ _userdata\inst_b\Godot\app_userdata\Don't Stop\logs\godot.log
    大厅就会把 Steam 拉起来。
    `isSteamRunning()` 映射到 `SteamAPI_IsSteamRunning()`，是可以在 `Init` 之前
    安全调用的自由函数。
-2. **`ensure_steam_ready()`** —— 真正调用 `steamInit()`。只在玩家选中 Steam P2P
-   或 `host()/join()` 时触发。成功会缓存，**失败不缓存**，这样玩家中途启动
-   Steam 之后重试还能成功。
+2. **`ensure_steam_ready()`** —— 真正调用 `steamInitEx(0, true)`。只在玩家选中
+   Steam P2P 或 `host()/join()` 时触发。成功会缓存，**失败不缓存**，这样玩家中途
+   启动 Steam 之后重试还能成功。
+
+   > ⚠️ **两个参数都不能省，`embed_callbacks` 必须是 `true`。**
+   > 这里踩过一个**阻断性**的坑：原来写的是 `steam.call("steamInit", false)`，
+   > 而真实签名是 `steamInit(app_id, embed_callbacks)` —— 那个 `false` 被当成了
+   > **`app_id`**，`embed_callbacks` 走默认的 `false`。于是 Steam 回调永远不被派发，
+   > 异步的 `initRelayNetworkAccess()` 就**永远停在 `Waiting`**，任何 P2P 连接都
+   > 只会超时。
+   >
+   > 三组对照（同一台机器、同一个探针，各跑独立进程）：
+   >
+   > | 配置 | 中继网络 |
+   > | --- | --- |
+   > | `steamInit(false)`，不泵回调 | 15 秒一直 `Waiting(2)` |
+   > | `steamInit(false)` + 每帧 `run_callbacks()` | 9 秒 `Current(100)` |
+   > | **`steamInitEx(0, true)`** | 9 秒 `Current(100)` |
+   >
+   > 用 `steamInitEx` 而不是 `steamInit` 还有个额外好处：前者返回
+   > `Dictionary{status, verbal}`，失败能给出真实原因；后者只返回 `bool`。
+   >
+   > `steam_selftest` 现在有四条断言守着它：替身按**真实签名**建模、
+   > 检查实参是 `(0, true)`、失败消息必须同时带 `status` 和 `verbal`、
+   > 并用 `ClassDB` 核对 `steamInitEx` 的返回类型确实是 `Dictionary`。
+   > 这些断言能存在，是因为上一版替身建模的是一个**不存在的签名**
+   > （`steamInit(embed_callbacks) -> Dictionary`），36 项断言全绿却放过了这个 bug。
 3. **`steam_persona_name()` / `local_steam_id()`** —— 需要初始化状态的取值函数。
    未初始化时安静地返回 `""` / `0`，**绝不**去碰真实 Steam：
    `getPersonaName()` 在未初始化时不是返回空串，而是堆损坏崩溃。

@@ -41,21 +41,52 @@ const CLIENT_NAME := "SteamClient"
 
 
 ## Steam 单例的替身：只需要 SteamTransport 实际会调用的那几个方法。
+##
+## 签名必须和真实扩展一致 —— 这里**正是漏掉那个阻断性 bug 的地方**：
+## 上一版替身写的是 `steamInit(embed_callbacks: bool = false) -> Dictionary`，
+## 一个**根本不存在的签名**。真实签名是
+##   steamInit(app_id: int, embed_callbacks: bool) -> bool
+##   steamInitEx(app_id: int, embed_callbacks: bool) -> Dictionary
+## 因为替身把 `false` 收下当成了 embed_callbacks，包装层把 `false` 当 app_id 传、
+## embed_callbacks 走默认 false 的错误就一路绿灯，36 项断言全过却挡不住它。
+##
+## 现在替身按真实签名建模，并且记录收到了什么，好让断言能检查参数。
 class FakeSteam extends RefCounted:
 	var relay_calls := 0
 	var init_calls := 0
+	var run_callbacks_calls := 0
 	var running := true
 	var persona := "FakeSteamUser"
+	## 记录最近一次初始化的实参：(app_id, embed_callbacks)
+	var last_init_args: Array = []
+	## 让测试能模拟初始化失败（status, verbal）。
+	var fail_status := 0
+	var fail_verbal := ""
 
 	func isSteamRunning() -> bool:
 		return running
 
-	## 真实签名：steamInit(embed_callbacks: bool = false) -> Dictionary。
-	func steamInit(_embed_callbacks: bool = false) -> Dictionary:
+	## 真实签名：steamInit(app_id: int, embed_callbacks: bool) -> bool
+	## 只返回 bool，**不提供失败原因** —— 这正是要用 steamInitEx 的理由。
+	func steamInit(app_id: int, embed_callbacks: bool) -> bool:
+		last_init_args = [app_id, embed_callbacks]
+		init_calls += 1
+		if not running:
+			return false
+		return fail_status == 0
+
+	## 真实签名：steamInitEx(app_id: int, embed_callbacks: bool) -> Dictionary
+	func steamInitEx(app_id: int, embed_callbacks: bool) -> Dictionary:
+		last_init_args = [app_id, embed_callbacks]
 		init_calls += 1
 		if not running:
 			return {"status": 1, "verbal": "Steam not running"}
-		return {"status": 0, "verbal": "OK"}
+		return {"status": fail_status, "verbal": fail_verbal}
+
+	## 真实签名：run_callbacks() -> void。embed_callbacks 打开时由扩展内部调用，
+	## 包装层不该再去调它 —— 断言里会检查这一点。
+	func run_callbacks() -> void:
+		run_callbacks_calls += 1
 
 	func initRelayNetworkAccess() -> void:
 		relay_calls += 1
@@ -244,6 +275,69 @@ func _verify_against_real_signature(host_call: Dictionary, client_call: Dictiona
 			expected.get("create_client", -1), client_call.get("args", []).size()])
 
 
+## Steam 初始化契约：参数顺序、embed_callbacks、失败消息。
+##
+## 这三条正是**上一版测试全部漏掉**的东西，而它们合起来放过了那个阻断性 bug：
+## 中继网络永远不就绪 → 任何 Steam P2P 连接都只会超时。
+## 上一版替身建模的是一个不存在的签名 `steamInit(embed_callbacks) -> Dictionary`，
+## 于是包装层把 `false` 当 app_id 传、embed_callbacks 走默认 false 的错误
+## 一路绿灯 —— 36 项断言全过，真机上却完全连不上。
+func _verify_steam_init_contract() -> void:
+	# 1) 纯函数：失败消息必须同时带上 status 和 verbal。
+	#    少了 verbal，真机上的 status=3 VersionMismatch 就退化成一句没有信息量的
+	#    「初始化失败」，能藏好几个小时。
+	var message := SteamTransport.init_failure_message(3, "No SteamUtils011")
+	_check(message.contains("3"), "初始化失败消息必须带上 status，实际：" + message)
+	_check(message.contains("No SteamUtils011"),
+		"初始化失败消息必须带上 verbal，实际：" + message)
+	_say("[steam] 初始化失败消息示例：" + message)
+
+	# 2) 用替身走**真实的初始化路径**，检查实参。
+	var fake := FakeSteam.new()
+	var ok_reason := SteamTransport.call_steam_init(fake)
+	_check(ok_reason.is_empty(), "替身应当初始化成功，实际：" + ok_reason)
+	_check(fake.last_init_args.size() == 2,
+		"初始化必须传满两个参数 (app_id, embed_callbacks)，实际 " + str(fake.last_init_args))
+	if fake.last_init_args.size() == 2:
+		_check(int(fake.last_init_args[0]) == SteamTransport.STEAM_INIT_APP_ID,
+			"app_id 必须是 %d（不覆盖 steam_appid.txt），实际 %s" % [
+				SteamTransport.STEAM_INIT_APP_ID, str(fake.last_init_args[0])])
+		# 这条是这次修复的核心：embed_callbacks 必须是 true，
+		# 否则 Steam 回调不被派发，中继网络永远停在 Waiting。
+		_check(bool(fake.last_init_args[1]),
+			"embed_callbacks 必须是 true，否则 Steam 中继网络永远不就绪。实际 " + str(fake.last_init_args[1]))
+
+	# 3) 失败路径：status 和 verbal 都要能传出来。
+	var failing := FakeSteam.new()
+	failing.fail_status = 3
+	failing.fail_verbal = "No SteamUtils011"
+	var fail_reason := SteamTransport.call_steam_init(failing)
+	_check(fail_reason.contains("No SteamUtils011"),
+		"初始化失败必须把 verbal 带给玩家，实际：" + fail_reason)
+	_check(fail_reason.contains("3"), "初始化失败必须带上 status，实际：" + fail_reason)
+
+	# 4) 真实扩展在场时，核对包装层实际用的那个方法**返回 Dictionary**。
+	#    这是唯一能在无头阶段挡住「用错初始化方法」的手段 —— 静态的
+	#    ensure_steam_ready() 只会拿真实单例，测试碰不到，所以只能核签名。
+	if Engine.has_singleton("Steam"):
+		var steam: Object = Engine.get_singleton("Steam")
+		var return_type := -1
+		var arg_count := -1
+		for method in steam.get_method_list():
+			if str(method.get("name", "")) == SteamTransport.STEAM_INIT_METHOD:
+				return_type = method.get("return", {}).get("type", -1)
+				arg_count = method.get("args", []).size()
+				break
+		_say("[steam] %s 的真实签名：参数 %d 个，返回类型 %d" % [
+			SteamTransport.STEAM_INIT_METHOD, arg_count, return_type])
+		_check(return_type == TYPE_DICTIONARY,
+			"%s 必须返回 Dictionary（才能拿到失败原因），实际返回类型 %d" % [
+				SteamTransport.STEAM_INIT_METHOD, return_type])
+		_check(arg_count == 2,
+			"%s 必须收 (app_id, embed_callbacks) 两个参数，实际 %d 个" % [
+				SteamTransport.STEAM_INIT_METHOD, arg_count])
+
+
 ## 连自己必须被当场挡下。
 ##
 ## 真机踩过的坑：同一台电脑双开时两个实例共用一个 Steam 客户端会话，SteamID
@@ -394,6 +488,7 @@ func _tick_invalid() -> void:
 	_check(err == ERR_INVALID_PARAMETER,
 		"非法 SteamID 应当返回 ERR_INVALID_PARAMETER，实际 " + str(err))
 	_check(not probe.last_error.is_empty(), "非法 SteamID 应当给出可读原因")
+	_verify_steam_init_contract()
 	_verify_self_connect_guard()
 
 	# 断开后应当干净复位。

@@ -26,6 +26,15 @@ class_name SteamTransport
 const STEAM_SINGLETON := "Steam"
 ## GodotSteam 提供的 MultiplayerPeer 实现类名。
 const STEAM_PEER_CLASS := "SteamMultiplayerPeer"
+## 用哪个方法初始化 SteamAPI。
+##
+## 必须是 `steamInitEx` 而不是 `steamInit`：前者返回 Dictionary{status, verbal}，
+## 失败时能给出真实原因；后者只返回 bool。两者的签名都是
+## `(app_id: int, embed_callbacks: bool)`，**两个参数都不能省** —— 详见
+## [method ensure_steam_ready] 里那段对照实验。
+const STEAM_INIT_METHOD := "steamInitEx"
+## 传给初始化的 app_id。0 = 不覆盖，按项目根目录的 steam_appid.txt 走（480）。
+const STEAM_INIT_APP_ID := 0
 ## Steam P2P 的虚拟端口，两端必须一致。
 const DEFAULT_VIRTUAL_PORT := 0
 ## 等待握手的最长时间。
@@ -182,23 +191,66 @@ static func ensure_steam_ready() -> String:
 	var steam: Object = Engine.get_singleton(STEAM_SINGLETON)
 	if steam == null:
 		return "无法获取 Steam 单例。"
-	if not steam.has_method("steamInit"):
-		return "GodotSteam 扩展里没有 steamInit 方法（版本过旧？）。"
 
-	var raw: Variant = steam.call("steamInit", false)
-	# steamInit 返回 Dictionary{status:int, verbal:String}；老版本可能直接返回 bool。
+	var init_reason := call_steam_init(steam)
+	if not init_reason.is_empty():
+		return init_reason
+
+	_init_state = INIT_OK
+	return ""
+
+
+## 真正执行初始化并解析结果。返回 "" 表示成功，否则是不可用原因。
+##
+## 从 [method ensure_steam_ready] 里抽出来、且**不碰 `_init_state` 缓存**，是为了
+## 让无头测试能拿注入替身走**同一条**初始化路径去检查实参和失败消息 ——
+## 静态的 ensure_steam_ready() 只会去拿真实单例，测试根本碰不到它，
+## 而这一段正是漏掉那个阻断性 bug 的地方。
+##
+## 参数顺序是 `(app_id, embed_callbacks)`，两个都不能省：
+## 原写法 `steam.call("steamInit", false)` 把 false 当成了 **app_id**，
+## embed_callbacks 走默认 false —— Steam 回调永远不被派发，
+## async 的 initRelayNetworkAccess() 于是**永远停在 Waiting(2)**，
+## 任何 P2P 连接都只会走到超时。
+##
+## 三组对照（同一台机器、同一个探针，各跑一个独立进程）：
+##   steamInit(false)，不泵回调            → 15 秒一直 Waiting(2)      ← 原状
+##   steamInit(false) + run_callbacks()/帧 → 9 秒 Current(100)
+##   steamInitEx(0, true)                  → 9 秒 Current(100)         ← 现在这样
+##
+## 用 steamInitEx 而不是 steamInit 还有第二个理由：它返回 Dictionary{status, verbal}，
+## 失败能给出真实原因；steamInit 只返回 bool，任何失败都退化成没有信息量的
+## status=1。实测 steamInitEx 会带回 {status: 3, verbal: "No SteamUtils011"}
+## 这种能直接定位问题的信息（那是 Steam 客户端被钉住版本、没有更新）。
+## app_id = 0 表示不覆盖，仍按项目根目录的 steam_appid.txt 走。
+static func call_steam_init(steam: Object) -> String:
+	if steam == null:
+		return "无法获取 Steam 单例。"
+	if not steam.has_method(STEAM_INIT_METHOD):
+		return "GodotSteam 扩展里没有 %s 方法（版本过旧？）。" % STEAM_INIT_METHOD
+
+	var raw: Variant = steam.call(STEAM_INIT_METHOD, STEAM_INIT_APP_ID, true)
 	var status := 0
 	var verbal := ""
 	if raw is Dictionary:
 		status = int(raw.get("status", 0))
 		verbal = str(raw.get("verbal", ""))
 	elif raw is bool:
+		# 兼容只返回 bool 的旧签名：失败时没有原因可给。
 		status = 0 if bool(raw) else 1
 	if status != 0:
-		return "SteamAPI 初始化失败（status=%d %s）。" % [status, verbal]
-
-	_init_state = INIT_OK
+		return init_failure_message(status, verbal)
 	return ""
+
+
+## 初始化失败时的用户可见消息。
+##
+## 单独抽成静态函数是为了能被纯函数断言覆盖：原始的 status 和 verbal 都必须出现在
+## 结果里。以前只写「初始化失败」而不带 verbal，真机上把一个
+## status=3 VersionMismatch（Steam 客户端版本被钉住、没有更新）藏了好几个小时。
+static func init_failure_message(status: int, verbal: String) -> String:
+	var detail := verbal if not verbal.is_empty() else "（Steam 没有给出说明）"
+	return "SteamAPI 初始化失败（status=%d，%s）。" % [status, detail]
 
 
 ## SteamAPI 是否已成功初始化。
