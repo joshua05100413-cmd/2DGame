@@ -1,2 +1,11 @@
 # Normalize EOL for all files that Git considers text files.
 * text=auto eol=lf
+
+# EXCEPTION: Windows batch files must stay CRLF.
+#
+# cmd.exe locates goto/call labels by byte offset, and the CR is part of that
+# offset. With a flat eol=lf a fresh clone or CI checkout gets LF-only .bat
+# files, the label lookup breaks, and tools/verify.bat fails in confusing ways
+# (it only works locally because it was authored with CRLF).
+*.bat text eol=crlf
+*.cmd text eol=crlf
