@@ -1,6 +1,27 @@
 # Godot 2D Town-Down Game
 
 use Godot4
+
+> ## 🚀 新加入的开发者先看这里
+>
+> **[`docs/ONBOARDING.md`](docs/ONBOARDING.md)** —— 从 clone 到跑通双人联机、
+> 到提第一个 PR 的完整步骤（约 20 分钟）。
+>
+> **两个必须先知道的事：**
+>
+> 1. **代码在 `feature/multiplayer` 分支上，`main` 还没有。**
+>    `git clone` 之后要 `git checkout feature/multiplayer`，
+>    否则你看到的是单机版本。
+> 2. **验证脚本必须从 `cmd` 跑，不要从 PowerShell 跑** ——
+>    Godot 是 GUI 子系统程序，PowerShell 调用它不等待还会丢输出，
+>    你会看到一个假的「瞬间通过」。
+>
+> 一条命令确认环境正常：
+>
+> ```bat
+> tools\verify.bat 0 all
+> ```
+
 ---
 Don't Stop is an exhilarating top-down 2D shooter that melds roguelite elements with a heart-pounding race against time. Dive into a world where every tick of the clock is critical, navigating through relentless challenges and making decisive moves to survive within stringent time limits.
 
@@ -43,6 +64,14 @@ unchanged — every networking path is a no-op when no session is active.
 
 Design notes, the Godot 4.4 migration fixes, and the list of what is *not* synced
 yet live in [docs/MULTIPLAYER_PLAN.md](docs/MULTIPLAYER_PLAN.md).
+
+| 文档 | 内容 |
+| --- | --- |
+| [docs/ONBOARDING.md](docs/ONBOARDING.md) | **新队友上手指引**：clone、跑通、联机、提 PR、最容易踩的坑 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 协作规范：分支、提交、模块边界、代码风格 |
+| [docs/TESTING.md](docs/TESTING.md) | 怎么实际跑起来：单机、双开、局域网、验收清单 |
+| [docs/STEAM_SETUP.md](docs/STEAM_SETUP.md) | Steam P2P 真机联机：装扩展、两账号前提、排查表 |
+| [docs/MULTIPLAYER_PLAN.md](docs/MULTIPLAYER_PLAN.md) | 设计：权威模型、RPC 清单、已踩过的坑 |
 
 Headless verification (run from `cmd`, not PowerShell — see the docs):
 

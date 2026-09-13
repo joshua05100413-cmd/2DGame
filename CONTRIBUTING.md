@@ -1,8 +1,27 @@
 # 协作指南
 
+**新队友请先看 [`docs/ONBOARDING.md`](docs/ONBOARDING.md)** —— 从 clone 到跑通
+联机、到提第一个 PR 的完整步骤都在那里。本文是常驻的规范细节。
+
 四个人并行改一个 Godot 项目，最容易坏掉的不是代码本身，而是**互相的假设**：
 RPC 的到达顺序、名单什么时候收敛、单机路径有没有被悄悄改坏。
 所以本仓库的第一原则是：**任何改动都必须能被无头验证复现**。
+
+---
+
+## 0. 代码在哪个分支
+
+**多人联机的全部改动都在 `feature/multiplayer` 上，`main` 还没有。**
+`main` 目前是上游原作者的代码（带一个上游合并提交），没有联机层、没有大厅、
+没有 `autoload/net/`。
+
+```bat
+git checkout feature/multiplayer
+git pull
+```
+
+日常从 `feature/multiplayer` 开短分支；`main` 等 `feature/multiplayer` 稳定
+之后整体合并。
 
 ---
 
@@ -14,11 +33,28 @@ RPC 的到达顺序、名单什么时候收敛、单机路径有没有被悄悄�
 | GDScript | 项目把「从 Variant 推断类型」等警告**当作错误**，写代码时注意显式标注类型 |
 
 Windows 上 Godot 的安装路径写在 `tools/verify.bat` 的 `GODOT_EXE` 里；
-如果不在默认位置，改那一行或把它设成环境变量。
+如果不在默认位置，改那一行。**这一行是本机路径，改完不要提交。**
 
-> ⚠️ **不要**打开 `addons/godotsteam/` 里的扩展。
-> 它是为旧版 Godot 编译的，加载会让 Godot 4.4 直接段错误（见
-> `docs/MULTIPLAYER_PLAN.md` §3）。该目录已被 `.gdignore` 隔离，保持原样。
+### Steam 扩展
+
+`addons/godotsteam/` **已被 `.gitignore`，不在仓库里**。要测 Steam 联机时用：
+
+```bat
+tools\setup_steam.bat
+```
+
+它会下载固定版本（4.22.1，兼容 Godot 4.4）并装好，**不要把它提交进去**：
+
+- 完整插件解压后约 92 MB（光 Android 就 33 MB），而仓库本身 45 MB。
+- 只提交 win64 更糟：`.gdextension` 按平台列库，运行平台缺库时 Godot 报
+  `No GDExtension library found for current OS and architecture`，
+  这条 ERROR 会让 **Linux CI 直接失败**（CI 现在根本看不到扩展，这正是它稳定的原因）。
+- 仓库里原来那份是给 Godot 4.2 编译的，必须靠 `.gdignore` 隔离才不会让 4.4
+  崩溃 —— 这个目录连同那个坑已经一起从仓库里删掉了。
+  **现在不要再手动创建 `addons/godotsteam/.gdignore`**，那只会让扩展静默不加载。
+
+> ⚠️ GodotSteam 上游明确**不接受任何 LLM 生成的 issue / patch / PR**。
+> 我们只用它 MIT 授权的预编译产物，不向它提交任何东西。
 
 ---
 
@@ -64,15 +100,22 @@ CI 里也有这一步。如果哪天它变成 PASS，说明审计坏了 —— �
 
 ## 3. 分支与提交流程
 
-- `main` 永远是**可运行**的。不直接往 `main` 推。
-- 从 `main` 开短分支：`feat/xxx`、`fix/xxx`、`net/xxx`、`ui/xxx`。
+- `feature/multiplayer` 是当前的集成分支（多人联机都在这）。
+- `main` 是上游原作者的代码，**暂时不往里合**，等联机稳定后整体合并。
+- 从 `feature/multiplayer` 开短分支：`feat/xxx`、`fix/xxx`、`net/xxx`、`ui/xxx`。
   分支生命周期尽量短（1–3 天），减少和别人的冲突面。
 - 提交信息用 [Conventional Commits](https://www.conventionalcommits.org/) 前缀：
   `feat:` `fix:` `net:` `ui:` `docs:` `chore:` `test:` `perf:` `refactor:`
 - **一个提交只做一件事。** 网络层的改动不要顺手格式化 UI 文件。
 - 提 PR 时写清楚：改了什么、为什么、**怎么验证的**（贴 `verify` 的输出）。
 - PR 至少一个人 review。涉及 `autoload/net/` 的改动建议两人 review。
-- 合并用 **Squash and merge**，保持 `main` 的历史可读。
+- 合并用 **Squash and merge**。
+
+### 拿到写权限
+
+仓库拥有者在 GitHub 上 **Settings → Collaborators and permissions → Add people**
+里加上你的 GitHub 用户名，权限给 **Write**，你接受邮件邀请后即可推送分支。
+外部贡献者走 Fork + PR，不需要加 collaborator。
 
 ### 推送
 
@@ -82,10 +125,9 @@ CI 里也有这一步。如果哪天它变成 PASS，说明审计坏了 —— �
 git push
 ```
 
-首次（仓库初始化之后只做一次）：
+首次推送上游分支：
 
 ```bat
-git push -u origin main
 git push -u origin feature/multiplayer
 ```
 
@@ -94,23 +136,20 @@ git push -u origin feature/multiplayer
   之后凭据会被缓存。
 
 > ⚠️ 本项目的历史被**重写过**（为了从历史里移除一个 100 MB 的 `Game.exe`），
-> 所以首次推送是全新历史，不是 fast-forward。
-> 如果远端仓库不是空的（例如建仓库时勾了 "Add a README"），推送会被拒绝。
-> 确认远端没有任何你需要的内容之后，可以：
-
-```bat
-git push -u origin main --force
-```
-
-> `--force` 会**覆盖远端历史**。只在确认远端没有你需要的东西时才用。
+> 所以它和上游不是同一条历史。**不要 `git push --force` 到 `main` 或
+> `feature/multiplayer`** —— 已经有多个 clone 了，强推会让别人的仓库错乱。
 
 新队友加入：
 
 ```bat
 git clone https://github.com/joshua05100413-cmd/2DGame.git
 cd 2DGame
+git checkout feature/multiplayer
 tools\verify.bat 0 all
 ```
+
+要测 Steam 再加一条 `tools\setup_steam.bat`。完整版见
+[`docs/ONBOARDING.md`](docs/ONBOARDING.md)。
 
 ---
 
