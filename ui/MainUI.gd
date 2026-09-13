@@ -10,6 +10,11 @@ var _lobby = null
 func _ready() -> void:
 	Utils.onGameStart.connect(self.onGameStart)
 	_add_multiplayer_button()
+	# 联机：房间的节奏由房主决定，各端跟随。
+	# 少了这条，房主进了关卡而客户端还停在主菜单上 —— 「开始游戏」原本是
+	# 各端各自的本地操作。
+	if not Net.match_started.is_connected(_on_match_started):
+		Net.match_started.connect(_on_match_started)
 
 ## 在主菜单按钮列里插入「联机」入口。
 ##
@@ -41,6 +46,23 @@ func _on_start_pressed() -> void:
 	add_child(ins)
 
 func onModeChoose(mode):
+	if Net.is_multiplayer_active():
+		if Net.is_host():
+			# 房主选模式 = 宣布开局，广播给所有人（call_local 也会回到自己这里）。
+			Net.start_match(mode)
+		else:
+			# 客户端不能自己开局：它得等房主，否则各端会进到不同的地图。
+			Utils.showToast("等待房主开始游戏")
+		return
+	_enter_mode(mode)
+
+
+## 房主宣布开局后，各端（含房主）走同一段进入逻辑。
+func _on_match_started(mode: int) -> void:
+	_enter_mode(mode)
+
+
+func _enter_mode(mode):
 	if mode == 0:
 		Utils.gameStart()
 	else:

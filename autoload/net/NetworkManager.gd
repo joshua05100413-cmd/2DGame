@@ -27,6 +27,8 @@ signal joined_server()
 signal connection_failed(reason: String)
 signal players_changed()
 signal local_player_registered(peer_id: int)
+## 房主宣布开始一局；所有端（含房主自己）据此进入同一个模式。
+signal match_started(mode: int)
 ## 客户端侧：到房主的连接断了。
 signal server_disconnected()
 
@@ -276,6 +278,30 @@ func set_ready(is_ready: bool = true) -> void:
 			_broadcast_players()
 	else:
 		_set_ready.rpc_id(get_server_id(), is_ready)
+
+
+## 房主宣布开始一局。
+##
+## 为什么需要它：「开始游戏」原本是各端各自的本地操作，于是房主进了关卡、
+## 客户端还停在主菜单上 —— 四人协作没法玩。房间的节奏应当由房主决定，
+## 各端只是跟随。
+##
+## [param mode] 与 ModeSelect 的模式编号一致（0 = 城镇，1 = 雪地）。
+func start_match(mode: int) -> void:
+	if not is_multiplayer_active():
+		# 单机：直接本地开始，和联机走同一条路径，避免两套分支各自跑偏。
+		match_started.emit(mode)
+		return
+	if not is_host():
+		push_warning("Net: 只有房主能开始一局，客户端应当等待 match_started。")
+		return
+	# call_local：房主自己也收到，进入同一个模式，不必再写一份本地分支。
+	_match_started.rpc(mode)
+
+
+@rpc("authority", "call_local", "reliable")
+func _match_started(mode: int) -> void:
+	match_started.emit(mode)
 
 
 # --- 内部：传输层装配 ---------------------------------------------------------

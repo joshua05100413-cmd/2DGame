@@ -126,6 +126,7 @@ enum Stage {
 	PICKUP_CLAIMED,
 	PLAYER_DAMAGE,
 	SHOT_VISUAL,
+	MATCH_START,
 	LEVEL_STATE,
 	POSITION_SYNC,
 	LATE_JOIN,
@@ -287,6 +288,8 @@ func _tick() -> void:
 			_tick_player_damage()
 		Stage.SHOT_VISUAL:
 			_tick_shot_visual()
+		Stage.MATCH_START:
+			_tick_match_start()
 		Stage.LEVEL_STATE:
 			_tick_level_state()
 		Stage.POSITION_SYNC:
@@ -332,6 +335,10 @@ func _tick_attach() -> void:
 		_client_shots.append({
 			"shooter": shooter, "from": from, "direction": direction, "speed": speed,
 		}))
+	_host_net.match_started.connect(func(mode: int) -> void:
+		_host_match_modes.append(mode))
+	_client_net.match_started.connect(func(mode: int) -> void:
+		_client_match_modes.append(mode))
 	_host_coop.call("attach_world", _host_world)
 	_client_coop.call("attach_world", _client_world)
 
@@ -504,7 +511,21 @@ func _tick_shot_visual() -> void:
 	# 客户端自己开火 -> 必须由房主中转，且**不能**回流到自己
 	# （否则本机那一发会被复现两次）。
 	_client_coop.call("broadcast_shot", Vector2(30, 40), Vector2.LEFT, 500.0)
+	_advance(Stage.MATCH_START)
+
+
+func _tick_match_start() -> void:
+	if not _settled():
+		return
+	# 房主宣布开局 —— 客户端必须跟着收到，否则它会一直停在主菜单上。
+	_host_net.call("start_match", 1)
+	# 客户端自己开局必须被拒（否则各端会进到不同的地图）。
+	_client_net.call("start_match", 2)
 	_advance(Stage.LEVEL_STATE)
+
+
+var _host_match_modes: Array = []
+var _client_match_modes: Array = []
 
 
 var _client_shots: Array = []
@@ -557,6 +578,12 @@ func _tick_level_state() -> void:
 			"弹道速度应当一致，实际 " + str(shot["speed"]))
 	_check(_client_shot_visuals.size() == 1,
 		"客户端应当复现 1 发表现子弹，实际 " + str(_client_shot_visuals.size()))
+
+	# 房主开局广播：客户端必须跟着进入，自己开局必须无效。
+	_check(_host_match_modes == [1],
+		"房主自己也应当收到开局通知，实际 " + str(_host_match_modes))
+	_check(_client_match_modes == [1],
+		"客户端应当跟随房主进入同一个模式，实际 " + str(_client_match_modes))
 
 	# 重复上报必须幂等：两个玩家同一帧踩到同一枚金币时，只有一个人能拿到。
 	_client_coop.call("report_pickup_claimed", _spawned_pickup_id)
