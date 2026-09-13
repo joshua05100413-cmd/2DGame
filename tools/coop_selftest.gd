@@ -34,6 +34,7 @@ const HOST_NAME := "HostPlayer"
 const CLIENT_NAME := "ClientPlayer"
 const LATE_NAME := "LatePlayer"
 const MONSTER_TYPE := "stub_ghoul"
+const PICKUP_TYPE := "stub_coin"
 
 
 # --- 替身节点 -----------------------------------------------------------------
@@ -102,6 +103,15 @@ class StubMonster extends Node2D:
 				coop.call("notify_monster_died", net_id)
 
 
+## 掉落物替身。与怪物不同，它在每一端都是可交互的实体，只有归属由房主裁定。
+class StubPickup extends Node2D:
+	var net_id := 0
+	var claimed_locally := false
+
+	func set_network_id(id: int) -> void:
+		net_id = id
+
+
 # --- 测试状态 -----------------------------------------------------------------
 
 enum Stage {
@@ -112,6 +122,10 @@ enum Stage {
 	MONSTER_REPLICATED,
 	MONSTER_DAMAGED,
 	MONSTER_DEATH,
+	PICKUP_SPAWN,
+	PICKUP_CLAIMED,
+	PLAYER_DAMAGE,
+	SHOT_VISUAL,
 	LEVEL_STATE,
 	POSITION_SYNC,
 	LATE_JOIN,
@@ -153,6 +167,7 @@ var _late_monster_root: Node2D = null
 var _spawned_monster_id := 0
 var _late_joined := false
 var _late_beacon_id := 0
+var _late_pickup_id := 0
 
 
 func _initialize() -> void:
@@ -228,7 +243,7 @@ func _make_root(parent: Node, node_name: String) -> Node2D:
 	return node
 
 
-func _build_world(player_root: Node2D, monster_root: Node2D, coop: Node) -> CoopWorld:
+func _build_world(player_root: Node2D, monster_root: Node2D, coop: Node, visual_log: Array) -> CoopWorld:
 	var world := CoopWorld.create(player_root, monster_root, Vector2(64, 64))
 	world.with_players(
 		func() -> Node2D: return StubPlayer.new(),
@@ -237,6 +252,12 @@ func _build_world(player_root: Node2D, monster_root: Node2D, coop: Node) -> Coop
 		var monster := StubMonster.new()
 		monster.coop = coop
 		return monster)
+	world.with_pickup(PICKUP_TYPE, func() -> Node2D:
+		return StubPickup.new())
+	world.with_shot_visual(func(shooter: int, from: Vector2, direction: Vector2, speed: float) -> void:
+		visual_log.append({
+			"shooter": shooter, "from": from, "direction": direction, "speed": speed,
+		}))
 	return world
 
 
@@ -258,6 +279,14 @@ func _tick() -> void:
 			_tick_monster_damaged()
 		Stage.MONSTER_DEATH:
 			_tick_monster_death()
+		Stage.PICKUP_SPAWN:
+			_tick_pickup_spawn()
+		Stage.PICKUP_CLAIMED:
+			_tick_pickup_claimed()
+		Stage.PLAYER_DAMAGE:
+			_tick_player_damage()
+		Stage.SHOT_VISUAL:
+			_tick_shot_visual()
 		Stage.LEVEL_STATE:
 			_tick_level_state()
 		Stage.POSITION_SYNC:
@@ -291,8 +320,18 @@ func _tick_attach() -> void:
 		return
 	_check(not bool(_host_coop.call("is_active")), "还没挂世界时 is_active() 应为 false")
 
-	_host_world = _build_world(_host_player_root, _host_monster_root, _host_coop)
-	_client_world = _build_world(_client_player_root, _client_monster_root, _client_coop)
+	_host_world = _build_world(_host_player_root, _host_monster_root, _host_coop, [])
+	_client_world = _build_world(_client_player_root, _client_monster_root, _client_coop, _client_shot_visuals)
+	_host_coop.pickup_claimed.connect(func(_net_id: int, _peer: int) -> void:
+		_pickup_claim_events += 1)
+	_host_coop.local_player_damaged.connect(func(amount: float) -> void:
+		_host_damage.append(amount))
+	_client_coop.local_player_damaged.connect(func(amount: float) -> void:
+		_client_damage.append(amount))
+	_client_coop.shot_fired.connect(func(shooter: int, from: Vector2, direction: Vector2, speed: float) -> void:
+		_client_shots.append({
+			"shooter": shooter, "from": from, "direction": direction, "speed": speed,
+		}))
 	_host_coop.call("attach_world", _host_world)
 	_client_coop.call("attach_world", _client_world)
 
@@ -406,14 +445,127 @@ func _tick_monster_death() -> void:
 		"怪物死亡后房主端应清空，实际 " + str(_host_coop.call("get_monster_count")))
 	_check(int(_client_coop.call("get_monster_count")) == 0,
 		"怪物死亡后客户端应同步清空，实际 " + str(_client_coop.call("get_monster_count")))
+	_advance(Stage.PICKUP_SPAWN)
+
+
+func _tick_pickup_spawn() -> void:
+	# 房主掉一枚金币。
+	_spawned_pickup_id = _host_coop.call("spawn_pickup", PICKUP_TYPE, Vector2(150, 90), {})
+	_check(_spawned_pickup_id > 0,
+		"房主 spawn_pickup 应当返回正的 net_id，实际 " + str(_spawned_pickup_id))
+	_advance(Stage.PICKUP_CLAIMED)
+
+
+func _tick_pickup_claimed() -> void:
+	if not _settled():
+		return
+	var host_pickup: Node = _host_coop.call("get_pickup_node", _spawned_pickup_id)
+	var client_pickup: Node = _client_coop.call("get_pickup_node", _spawned_pickup_id)
+	_check(host_pickup != null, "房主端应当存在刚掉落的金币")
+	_check(client_pickup != null, "客户端应当复制到这枚金币")
+	if host_pickup == null or client_pickup == null:
+		_finish()
+		return
+	_check(int(_host_coop.call("get_pickup_count")) == 1, "房主端应有 1 个掉落物")
+	_check(int(_client_coop.call("get_pickup_count")) == 1, "客户端应有 1 个掉落物")
+	# 掉落物在客户端不是影子：它必须能被本地玩家碰到。
+	_check(int(client_pickup.get("net_id")) == _spawned_pickup_id,
+		"客户端的掉落物应当沿用房主分配的 net_id")
+	_check(host_pickup.global_position.is_equal_approx(Vector2(150, 90)),
+		"掉落物应生成在房主指定位置，实际 " + str(host_pickup.global_position))
+
+	# 客户端拾取 -> 房主裁定 -> 两端移除。
+	_client_coop.call("report_pickup_claimed", _spawned_pickup_id)
+	_advance(Stage.PLAYER_DAMAGE)
+
+
+func _tick_player_damage() -> void:
+	if not _settled():
+		return
+	var client_peer: int = int(_client_net.call("get_unique_id"))
+	var host_peer: int = int(_host_net.call("get_unique_id"))
+	_check(_client_damage.is_empty(), "下发之前客户端不应当收到伤害")
+
+	# 房主裁定：客户端挨 3 点，房主自己挨 2 点。
+	_host_coop.call("apply_player_damage", client_peer, 3.0)
+	_host_coop.call("apply_player_damage", host_peer, 2.0)
+	# 非权威端调用必须被忽略：客户端不能凭空给自己发伤害指令。
+	_client_coop.call("apply_player_damage", client_peer, 99.0)
+	_advance(Stage.SHOT_VISUAL)
+
+
+func _tick_shot_visual() -> void:
+	if not _settled():
+		return
+	_check(_client_shots.is_empty(), "广播之前客户端不应当收到开火表现")
+
+	# 房主开火 -> 客户端复现弹道。
+	_host_coop.call("broadcast_shot", Vector2(10, 20), Vector2.RIGHT, 700.0)
+	# 客户端自己开火 -> 必须由房主中转，且**不能**回流到自己
+	# （否则本机那一发会被复现两次）。
+	_client_coop.call("broadcast_shot", Vector2(30, 40), Vector2.LEFT, 500.0)
 	_advance(Stage.LEVEL_STATE)
+
+
+var _client_shots: Array = []
+var _client_shot_visuals: Array = []
+
+
+var _client_damage: Array = []
+var _host_damage: Array = []
+
+
+var _spawned_pickup_id := 0
 
 
 func _tick_level_state() -> void:
 	if not _settled():
 		return
+	_check(int(_host_coop.call("get_pickup_count")) == 0,
+		"拾取后房主端应移除掉落物，实际 " + str(_host_coop.call("get_pickup_count")))
+	_check(int(_client_coop.call("get_pickup_count")) == 0,
+		"拾取后客户端应同步移除掉落物，实际 " + str(_client_coop.call("get_pickup_count")))
+	_check(_pickup_claim_events == 1,
+		"房主应当收到恰好 1 次拾取裁定，实际 " + str(_pickup_claim_events))
+
+	# 玩家受伤：房主裁定，各自的本机玩家扣血。
+	_check(_client_damage.size() == 1,
+		"客户端应当收到恰好 1 次伤害下发，实际 " + str(_client_damage.size()))
+	if not _client_damage.is_empty():
+		_check(is_equal_approx(float(_client_damage[0]), 3.0),
+			"客户端收到的伤害应当是 3.0，实际 " + str(_client_damage[0]))
+	_check(_host_damage.size() == 1,
+		"房主自己也应当收到恰好 1 次伤害，实际 " + str(_host_damage.size()))
+	if not _host_damage.is_empty():
+		_check(is_equal_approx(float(_host_damage[0]), 2.0),
+			"房主收到的伤害应当是 2.0，实际 " + str(_host_damage[0]))
+
+	# 弹道表现：房主开火被复现，客户端自己那一发不回流。
+	var host_peer: int = int(_host_net.call("get_unique_id"))
+	_check(_client_shots.size() == 1,
+		"客户端应当只收到房主那一次开火，实际 " + str(_client_shots.size()))
+	if not _client_shots.is_empty():
+		var shot: Dictionary = _client_shots[0]
+		_check(int(shot["shooter"]) == host_peer,
+			"开火者应当是房主，实际 " + str(shot["shooter"]))
+		var shot_from: Vector2 = shot["from"]
+		_check(shot_from.is_equal_approx(Vector2(10, 20)),
+			"弹道起点应当一致，实际 " + str(shot_from))
+		var shot_dir: Vector2 = shot["direction"]
+		_check(shot_dir.is_equal_approx(Vector2.RIGHT), "弹道方向应当一致")
+		_check(is_equal_approx(float(shot["speed"]), 700.0),
+			"弹道速度应当一致，实际 " + str(shot["speed"]))
+	_check(_client_shot_visuals.size() == 1,
+		"客户端应当复现 1 发表现子弹，实际 " + str(_client_shot_visuals.size()))
+
+	# 重复上报必须幂等：两个玩家同一帧踩到同一枚金币时，只有一个人能拿到。
+	_client_coop.call("report_pickup_claimed", _spawned_pickup_id)
+	_host_coop.call("report_pickup_claimed", _spawned_pickup_id)
 	_host_coop.call("publish_level_state", 4, 31.5, 17, 240, true)
 	_advance(Stage.POSITION_SYNC)
+
+
+var _pickup_claim_events := 0
 
 
 func _tick_position_sync() -> void:
@@ -428,6 +580,8 @@ func _tick_position_sync() -> void:
 	_check(is_equal_approx(float(_client_coop.get("time_left")), 31.5),
 		"客户端剩余时间应同步为 31.5，实际 " + str(_client_coop.get("time_left")))
 	_check(bool(_client_coop.get("round_active")), "客户端回合状态应同步为进行中")
+	_check(_pickup_claim_events == 1,
+		"重复上报拾取必须幂等，实际裁定次数 " + str(_pickup_claim_events))
 
 	# 房主把自己的位置写进权威表，Coop 会周期性广播给客户端。
 	_host_coop.call("report_local_state", Vector2(777, 333), true)
@@ -448,7 +602,7 @@ func _tick_late_join() -> void:
 		if int(_late_net.call("get_peer_count")) != 3:
 			return
 		_late_joined = true
-		_late_world = _build_world(_late_player_root, _late_monster_root, _late_coop)
+		_late_world = _build_world(_late_player_root, _late_monster_root, _late_coop, [])
 		_late_coop.call("attach_world", _late_world)
 		_stage_mark = _frames
 		return
@@ -482,8 +636,9 @@ func _start_late_joiner() -> void:
 	_late_monster_root = _make_root(late_branch, "MonsterRoot")
 	_late_coop = _make_coop(late_branch, _late_net)
 
-	# 加入前先造一只怪物、推进一段进度，用来验证补发。
+	# 加入前先造一只怪物、掉一枚金币、推进一段进度，用来验证补发。
 	_late_beacon_id = _host_coop.call("spawn_monster", MONSTER_TYPE, Vector2(900, 400), {})
+	_late_pickup_id = _host_coop.call("spawn_pickup", PICKUP_TYPE, Vector2(950, 420), {})
 	_host_coop.call("publish_level_state", 7, 12.0, 55, 900, true)
 
 	var err: int = _late_net.call("join_game", "127.0.0.1", PORT)
@@ -495,6 +650,11 @@ func _verify_late_join() -> void:
 		"中途加入的客户端应看到 3 个玩家，实际 " + str(_late_coop.call("get_player_count")))
 	_check(int(_late_coop.call("get_monster_count")) == 1,
 		"中途加入的客户端应补发到已有的 1 只怪物，实际 " + str(_late_coop.call("get_monster_count")))
+	_check(int(_late_coop.call("get_pickup_count")) == 1,
+		"中途加入的客户端应补发到已有的 1 个掉落物，实际 " + str(_late_coop.call("get_pickup_count")))
+	var late_pickup: Node = _late_coop.call("get_pickup_node", _late_pickup_id)
+	_check(late_pickup != null, "补发的掉落物应当带着房主分配的 net_id")
+	_check(_late_pickup_id > 0, "补发用例的掉落物 id 应当有效")
 	_check(int(_late_coop.get("level")) == 7,
 		"中途加入的客户端应同步到关卡 7，实际 " + str(_late_coop.get("level")))
 	_check(int(_late_coop.get("kills")) == 55,

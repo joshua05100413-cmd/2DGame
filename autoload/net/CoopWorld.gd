@@ -29,6 +29,14 @@ var local_player_node: Node2D = null
 var remote_player_factory: Callable = Callable()
 ## 怪物类型名 -> 造怪物的工厂 Callable。类型名在网络上传输，所以要稳定。
 var monster_factories: Dictionary = {}
+## 掉落物挂载点。为空时回退到 [member monster_root]（原版就是挂在怪物容器下的）。
+var pickup_root: Node2D = null
+## 掉落物类型名 -> 造掉落物的工厂 Callable。
+var pickup_factories: Dictionary = {}
+## 表现子弹工厂：接收 (shooter_peer: int, from: Vector2, direction: Vector2, speed: float)。
+## 由场景自己创建并挂载节点（原版子弹是挂在场景树根下的）。
+## 为空表示不做弹道表现，游戏照常运行。
+var shot_visual_factory: Callable = Callable()
 
 
 ## 便捷构造：只填必填项。
@@ -43,6 +51,25 @@ static func create(p_player_root: Node2D, p_monster_root: Node2D, p_spawn: Vecto
 ## 注册一种怪物的工厂。
 func with_monster(monster_type: String, factory: Callable) -> CoopWorld:
 	monster_factories[monster_type] = factory
+	return self
+
+
+## 注册一种掉落物的工厂。
+func with_pickup(pickup_type: String, factory: Callable) -> CoopWorld:
+	pickup_factories[pickup_type] = factory
+	return self
+
+
+## 掉落物应该挂在哪个容器下。
+func pickup_container() -> Node2D:
+	if is_instance_valid(pickup_root):
+		return pickup_root
+	return monster_root
+
+
+## 注册表现子弹工厂。
+func with_shot_visual(factory: Callable) -> CoopWorld:
+	shot_visual_factory = factory
 	return self
 
 

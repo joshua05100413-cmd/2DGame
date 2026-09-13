@@ -6,6 +6,7 @@ extends Node2D
 const HERO_SCENE = preload("res://game/hero/Hero.tscn")
 const REMOTE_PLAYER = preload("res://game/net/RemotePlayer.gd")
 const GHOUL_PRE = preload("res://game/monster/Ghoul/Ghoul.tscn")
+const VISUAL_BULLET = preload("res://game/bullets/Bullet.tscn")
 
 ## 联机时这只怪物的类型键，必须与 CoopWorld 注册的一致。
 const COOP_MONSTER_TYPE := "ghoul"
@@ -34,7 +35,19 @@ func _setup_coop_world() -> void:
 		func() -> Node2D: return HERO_SCENE.instantiate(),
 		func() -> Node2D: return REMOTE_PLAYER.new())
 	world.with_monster(COOP_MONSTER_TYPE, func() -> Node2D: return GHOUL_PRE.instantiate())
+	world.with_shot_visual(_spawn_shot_visual)
 	Coop.attach_world(world)
+
+
+## 联机：在本地复现队友开火。只是表现，不结算伤害。
+func _spawn_shot_visual(_shooter: int, from: Vector2, direction: Vector2, speed: float) -> void:
+	var bullet: Bullet = VISUAL_BULLET.instantiate()
+	bullet.setup_as_visual()
+	bullet.speed = speed
+	get_tree().root.add_child(bullet)
+	bullet.global_position = from
+	bullet.rotation = direction.angle()
+	bullet.fire()
 
 func onGameStart():
 	$ControlUI.visible = true

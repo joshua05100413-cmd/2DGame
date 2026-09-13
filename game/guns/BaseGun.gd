@@ -160,10 +160,28 @@ func fire(bullet:Bullet,is_bullet = true,is_play = true):
 	bullet.gun = self
 	if is_bullet:
 		bullet.fire()
+		_broadcast_shot(bullet)
 	if recoil > 0 && is_bullet:
 		player.set_knockback(recoil)
 	if is_play:
 		audio.play()
+
+
+## 联机：把这一枪告诉队友，让他们看得到弹道。
+##
+## 只广播「本机玩家的真实子弹」：
+##   * 表现子弹（is_visual_only）不再广播，否则会在玩家之间无限回流；
+##   * 别人的枪不会走到这里 —— 远端玩家是 RemotePlayer 代理，根本不握枪。
+## 注意这只是**表现**：命中与伤害仍然只有房主那一发算数。
+func _broadcast_shot(bullet: Bullet) -> void:
+	if bullet == null or bullet.is_visual_only:
+		return
+	if not Net.is_multiplayer_active():
+		return
+	var local_player = Utils.player
+	if player == null or local_player == null or player != local_player:
+		return
+	Coop.broadcast_shot(bullet.global_position, Vector2.RIGHT.rotated(bullet.rotation), bullet.speed)
 
 #切换子弹
 func reload_ammo():

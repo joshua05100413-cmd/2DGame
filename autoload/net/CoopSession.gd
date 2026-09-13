@@ -34,6 +34,14 @@ signal player_despawned(peer_id: int)
 signal monster_spawned(net_id: int, node: Node2D)
 ## 某个怪物已在本端移除。
 signal monster_removed(net_id: int)
+## 某个掉落物已在本端创建。
+signal pickup_spawned(net_id: int, node: Node2D)
+## 某个掉落物已在本端移除。
+signal pickup_removed(net_id: int)
+## 掉落物被拾取（只有房主会发出，因为归属由房主裁定）。
+signal pickup_claimed(net_id: int, by_peer: int)
+## 本机玩家受到伤害（由房主裁定并下发）。
+signal local_player_damaged(amount: float)
 ## 关卡共享状态（关卡号/剩余时间/击杀/金币）发生变化。
 signal level_state_changed()
 
@@ -69,6 +77,11 @@ var _monster_nodes: Dictionary = {}
 ## net_id -> 怪物的权威数据快照（用于中途加入时补发）。
 var _monster_records: Dictionary = {}
 var _next_monster_id := 1
+## net_id -> 本端创建的掉落物节点。
+var _pickup_nodes: Dictionary = {}
+## net_id -> 掉落物的权威数据（用于中途加入时补发）。
+var _pickup_records: Dictionary = {}
+var _next_pickup_id := 1
 
 var _player_sync_accum := 0.0
 ## 联机调试输出开关，跟随 NetworkManager 的 verbose。
@@ -289,6 +302,12 @@ func _clear_spawned_nodes() -> void:
 			monster.queue_free()
 	_monster_nodes.clear()
 	_monster_records.clear()
+	for pickup_id in _pickup_nodes.keys():
+		var pickup: Node2D = _pickup_nodes[pickup_id]
+		if is_instance_valid(pickup):
+			pickup.queue_free()
+	_pickup_nodes.clear()
+	_pickup_records.clear()
 
 
 # --- 玩家状态同步 -------------------------------------------------------------
@@ -396,6 +415,114 @@ func notify_monster_died(net_id: int) -> void:
 		_monster_records.erase(net_id)
 
 
+# --- 掉落物复制 ---------------------------------------------------------------
+##
+## 掉落物和怪物有个关键区别：**每一端都保留可交互的实体**。
+## 怪物在客户端是「影子」（不跑逻辑），但金币必须能被任何本地玩家碰到。
+## 所以这里不做权威/影子之分，只做「房主决定生成与消失，拾取权由房主裁定」：
+##   本地玩家碰到 -> 本地加钱 -> 上报房主 -> 房主广播移除（避免队友重复拾取）。
+
+## 房主：生成一个掉落物并广播给所有人。返回分配的 net_id；非房主返回 0。
+func spawn_pickup(pickup_type: String, position: Vector2, data: Dictionary = {}) -> int:
+	if not is_active() or not _is_host():
+		return 0
+	var net_id := _next_pickup_id
+	_next_pickup_id += 1
+	_spawn_pickup.rpc(net_id, pickup_type, position, data)
+	return net_id
+
+
+@rpc("authority", "call_local", "reliable")
+func _spawn_pickup(net_id: int, pickup_type: String, position: Vector2, data: Dictionary) -> void:
+	if world == null or not world.is_valid():
+		return
+	if _pickup_nodes.has(net_id):
+		return
+	var factory: Variant = world.pickup_factories.get(pickup_type)
+	if factory == null or not (factory is Callable) or not (factory as Callable).is_valid():
+		_trace("未注册的掉落物类型：%s" % pickup_type)
+		return
+	var node: Node2D = (factory as Callable).call()
+	if node == null:
+		return
+	node.name = "K%d" % net_id
+	node.global_position = position
+	_pickup_records[net_id] = {"type": pickup_type, "p": position, "data": data}
+	if node.has_method("set_network_id"):
+		node.call("set_network_id", net_id)
+	var container := world.pickup_container()
+	if container == null:
+		node.queue_free()
+		return
+	container.add_child(node)
+	_pickup_nodes[net_id] = node
+	_trace("生成掉落物 net_id=%d type=%s" % [net_id, pickup_type])
+	pickup_spawned.emit(net_id, node)
+
+
+## 房主：移除一个掉落物并广播。
+func despawn_pickup(net_id: int) -> void:
+	if not is_active() or not _is_host():
+		return
+	_despawn_pickup.rpc(net_id)
+
+
+@rpc("authority", "call_local", "reliable")
+func _despawn_pickup(net_id: int) -> void:
+	var node: Node2D = _pickup_nodes.get(net_id)
+	_pickup_nodes.erase(net_id)
+	_pickup_records.erase(net_id)
+	if node != null and is_instance_valid(node):
+		node.queue_free()
+	_trace("移除掉落物 net_id=%d" % net_id)
+	pickup_removed.emit(net_id)
+
+
+## 任何一端拾取掉落物后调用。
+##   房主：直接裁定归属并广播移除。
+##   客户端：上报房主，由房主裁定，避免两个玩家同时捡到同一枚金币。
+func report_pickup_claimed(net_id: int) -> void:
+	if not is_active():
+		return
+	if _is_host():
+		_resolve_pickup_claim(net_id, int(_net().get_unique_id()))
+	else:
+		_report_pickup_claimed.rpc_id(_net().get_server_id(), net_id)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func _report_pickup_claimed(net_id: int) -> void:
+	if not _is_host():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		return
+	_resolve_pickup_claim(net_id, sender)
+
+
+func _resolve_pickup_claim(net_id: int, by_peer: int) -> void:
+	# 已经被别人捡走的话，_pickup_nodes 里就没有它了，这里天然幂等。
+	if not _pickup_nodes.has(net_id):
+		return
+	pickup_claimed.emit(net_id, by_peer)
+	despawn_pickup(net_id)
+
+
+func get_pickup_node(net_id: int) -> Node2D:
+	var node: Variant = _pickup_nodes.get(net_id)
+	return node if node is Node2D and is_instance_valid(node) else null
+
+
+func get_pickup_count() -> int:
+	return _pickup_nodes.size()
+
+
+func get_pickup_ids() -> Array:
+	var ids := _pickup_nodes.keys()
+	ids.sort()
+	return ids
+
+
 # --- 伤害路由 -----------------------------------------------------------------
 
 ## 任何一端命中怪物都走这里。
@@ -461,6 +588,9 @@ func _player_damage(amount: float) -> void:
 
 
 func _damage_local_player(amount: float) -> void:
+	# 先发信号：即使本端还没有玩家节点（例如关卡正在加载），UI 也能给出反馈，
+	# 而且这让「伤害确实路由到了本人」这件事可以被无头测试断言。
+	local_player_damaged.emit(amount)
 	# Utils 也是 autoload，同样不能按标识符编译期引用。
 	var utils := find_autoload("Utils")
 	if utils == null:
@@ -470,6 +600,49 @@ func _damage_local_player(amount: float) -> void:
 		return
 	if player.has_method("onHit"):
 		player.call("onHit", amount)
+
+
+# --- 弹道表现同步 -------------------------------------------------------------
+##
+## 这只是**表现**：子弹是各端本地生成的，所以队友默认看不到你在开火。
+## 真正的命中与伤害仍然只有房主的权威判定那一发算数（见「伤害路由」），
+## 表现子弹的碰撞层是空的，飞出去就消失。
+##
+## 为什么房主要当中转：ENet 是星型拓扑，客户端之间不能直接通信，
+## 所以客户端 A 的开火必须由房主转发给 B。
+
+## 收到队友开火（本地据此复现弹道）。
+signal shot_fired(shooter_peer: int, from: Vector2, direction: Vector2, speed: float)
+
+
+## 本机玩家开火时调用。
+func broadcast_shot(from: Vector2, direction: Vector2, speed: float) -> void:
+	if not is_active():
+		return
+	if _is_host():
+		_shot_fired.rpc(int(_net().get_unique_id()), from, direction, speed)
+	else:
+		_report_shot.rpc_id(_net().get_server_id(), from, direction, speed)
+
+
+@rpc("any_peer", "call_remote", "unreliable")
+func _report_shot(from: Vector2, direction: Vector2, speed: float) -> void:
+	if not _is_host():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if sender == 0:
+		return
+	_shot_fired.rpc(sender, from, direction, speed)
+
+
+@rpc("authority", "call_remote", "unreliable")
+func _shot_fired(shooter_peer: int, from: Vector2, direction: Vector2, speed: float) -> void:
+	# 不给自己复现：本地那一发已经飞出去了，再生成一次会变成双份。
+	if shooter_peer == int(_net().get_unique_id()):
+		return
+	shot_fired.emit(shooter_peer, from, direction, speed)
+	if world != null and world.shot_visual_factory.is_valid():
+		world.shot_visual_factory.call(shooter_peer, from, direction, speed)
 
 
 # --- 关卡状态同步 -------------------------------------------------------------
@@ -538,6 +711,7 @@ func resync_peer(peer_id: int) -> void:
 		"gold": gold,
 		"round_active": round_active,
 		"monsters": _monster_records.duplicate(true),
+		"pickups": _pickup_records.duplicate(true),
 	}
 	_resync_world.rpc_id(peer_id, snapshot)
 
@@ -564,6 +738,16 @@ func _resync_world(snapshot: Dictionary) -> void:
 		# net_id 由房主在快照里给定，客户端的节点表必须沿用同一个 id 空间，
 		# 否则后续的伤害与移除 RPC 会对不上号。
 		_spawn_monster(net_id, str(record.get("type", "")), position, data)
+
+	var pickups: Dictionary = snapshot.get("pickups", {})
+	for raw_pickup_id in pickups.keys():
+		var pickup_id := int(raw_pickup_id)
+		if _pickup_nodes.has(pickup_id):
+			continue
+		var pickup_record: Dictionary = pickups[raw_pickup_id]
+		var pickup_position: Vector2 = pickup_record.get("p", Vector2.ZERO)
+		var pickup_data: Dictionary = pickup_record.get("data", {})
+		_spawn_pickup(pickup_id, str(pickup_record.get("type", "")), pickup_position, pickup_data)
 
 
 # --- 玩家节点访问 -------------------------------------------------------------

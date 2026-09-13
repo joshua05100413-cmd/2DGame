@@ -16,6 +16,9 @@ const bullet_shell = preload("res://game/bullets/BulletShell.tscn")
 var player:Player
 var gun:BaseGun
 
+## 联机：这一发只是「别人开火」的表现，不参与碰撞与伤害结算。
+var is_visual_only := false
+
 var timer = Timer.new()
 var queue_time = 0
 func _ready():
@@ -28,6 +31,17 @@ func _ready():
 
 func setOnwer(player):
 	self.player = player
+
+
+## 联机：把这一发变成纯表现子弹。
+##
+## 队友的弹道由各端本地复现（否则你看不到别人在开火），但**伤害判定只有一发**：
+## 真正的命中仍然走 Bullet.hitFlash -> Coop.apply_monster_damage 的权威路径。
+## 所以这里把碰撞层清空，让它飞出去然后自然消失，绝不碰任何东西。
+func setup_as_visual() -> void:
+	is_visual_only = true
+	collision_layer = 0
+	collision_mask = 0
 
 func start(local:Vector2,pos:Vector2):
 	global_position = local

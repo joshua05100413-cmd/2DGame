@@ -25,9 +25,12 @@ const monster_pre = preload("res://game/monster/Monster 2/Monster2.tscn")
 const death_borad = preload("res://ui/widgets/DeathBoard.tscn")
 const HERO_SCENE = preload("res://game/hero/Hero.tscn")
 const REMOTE_PLAYER = preload("res://game/net/RemotePlayer.gd")
+const VISUAL_BULLET = preload("res://game/bullets/Bullet.tscn")
 
 ## 联机时这只怪物的类型键，必须与 CoopWorld 注册的一致。
 const COOP_MONSTER_TYPE := "monster2"
+## 联机时金币掉落物的类型键。
+const COOP_PICKUP_GOLD := "gold"
 
 func _ready():
 	LevelServer.monsterCreate.connect(self.monsterCreate)
@@ -57,7 +60,33 @@ func _setup_coop_world() -> void:
 		var spawn := monster_pre.instantiate()
 		spawn.setDeathCallBack(self.onMonsterDeath)
 		return spawn)
+	world.with_pickup(COOP_PICKUP_GOLD, func() -> Node2D:
+		return gold.instantiate())
+	world.with_shot_visual(_spawn_shot_visual)
+	# 金币归属由房主裁定；裁定后由房主累加关卡统计。
+	# 客户端的 level_info 会被房主广播的状态覆盖，所以只有房主需要累加。
+	if not Coop.pickup_claimed.is_connected(_on_coop_pickup_claimed):
+		Coop.pickup_claimed.connect(_on_coop_pickup_claimed)
 	Coop.attach_world(world)
+
+
+## 联机：房主确认某枚金币被拾取后累加关卡统计。
+func _on_coop_pickup_claimed(_net_id: int, _by_peer: int) -> void:
+	if Coop.is_host():
+		LevelServer.level_info.gold += 1
+
+
+## 联机：在本地复现队友开火。
+## 这只是表现 —— 子弹的碰撞层是空的，飞出去就消失，不会造成任何伤害。
+func _spawn_shot_visual(_shooter: int, from: Vector2, direction: Vector2, speed: float) -> void:
+	var bullet: Bullet = VISUAL_BULLET.instantiate()
+	bullet.setup_as_visual()
+	bullet.speed = speed
+	# 原版子弹就是挂在场景树根下的，保持一致。
+	get_tree().root.add_child(bullet)
+	bullet.global_position = from
+	bullet.rotation = direction.angle()
+	bullet.fire()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if $CanvasLayer/openShop.visible && Input.is_action_just_pressed("e"):
@@ -180,9 +209,20 @@ func monsterCreate():
 func onMonsterDeath(monster_ins):
 	LevelServer.level_info.kill += 1
 	if randi() % 3 <= 1:
-		var ins = gold.instantiate()
-		ins.global_position = monster_ins.global_position
-		ins.setGiveCallBack(func onGive():
-			LevelServer.level_info.gold += 1)
-		monster_root.add_child(ins)
+		_spawn_gold_at(monster_ins.global_position)
 	kill_playr.play()
+
+
+# 掉落一枚金币。
+# 联机：只有房主决定掉不掉、掉在哪，其余端由 CoopSession 复制出来；
+# 各端各自跑随机数的话，队友看到的掉落会完全不一样。
+func _spawn_gold_at(drop_position: Vector2) -> void:
+	if Net.is_multiplayer_active():
+		if Coop.is_host():
+			Coop.spawn_pickup(COOP_PICKUP_GOLD, drop_position)
+		return
+	var ins = gold.instantiate()
+	ins.global_position = drop_position
+	ins.setGiveCallBack(func onGive():
+		LevelServer.level_info.gold += 1)
+	monster_root.add_child(ins)
