@@ -31,12 +31,14 @@ const NetScript := preload("res://autoload/net/NetworkManager.gd")
 const CoopScript := preload("res://autoload/net/CoopSession.gd")
 
 const MAIN_SCENE := "res://game/map/Main.tscn"
+## 传送门在 Town 子场景下（Town 是 Main.tscn 的子场景）。
+const PORTAL_PATH := "Town/TileMap2/PortalRoot/Portal"
 const PORT := 27423
 const MAX_FRAMES := 2400
 const SETTLE := 25
 const CLIENT_NAME := "ClientPlayer"
 
-enum Stage { LOAD_SCENE, CONNECTING, CLIENT_WORLD, HOST_WORLD, SPAWN_MONSTER, VERIFY, REATTACH, DONE }
+enum Stage { LOAD_SCENE, CONNECTING, CLIENT_WORLD, HOST_WORLD, SPAWN_MONSTER, VERIFY, REATTACH, PORTAL_SOLO, PORTAL_VERIFY, DONE }
 
 
 # --- 客户端替身 ---------------------------------------------------------------
@@ -164,6 +166,10 @@ func _tick() -> void:
 			_tick_verify()
 		Stage.REATTACH:
 			_tick_reattach()
+		Stage.PORTAL_SOLO:
+			_tick_portal_solo()
+		Stage.PORTAL_VERIFY:
+			_tick_portal_verify()
 		Stage.DONE:
 			pass
 
@@ -392,7 +398,47 @@ func _tick_reattach() -> void:
 	var mine: Node = _host_coop.call("get_player_node", host_id)
 	_check(mine != null and is_instance_valid(mine),
 		"客户端重挂世界不应影响房主端的本机玩家节点")
+
+	# 传送门：必须所有人到齐才开放。
+	_portal = _main_scene.get_node_or_null(PORTAL_PATH)
+	_check(_portal != null, "应当能找到传送门 " + PORTAL_PATH)
+	if _portal == null:
+		_finish()
+		return
+	var utils := root.get_node_or_null(^"Utils")
+	_host_player = null if utils == null else utils.get("player")
+	_check(_host_player != null, "应当能拿到房主的本机玩家")
+	if _host_player == null:
+		_finish()
+		return
+	# 房主的角色先走进传送门范围。
+	_host_player.global_position = _portal.global_position
+	_advance(Stage.PORTAL_SOLO)
+
+
+func _tick_portal_solo() -> void:
+	if _frames - _stage_mark < 30:
+		return
+	# 房间里是 2 个人，只有房主一个人在门里 —— 不该开门。
+	_check(_portal.expected_player_count() == 2,
+		"联机时应期望 2 个玩家到齐，实际 " + str(_portal.expected_player_count()))
+	_check(not _portal.is_complete(),
+		"只有房主一个人在门里时不应该开放传送门")
+	# 客户端报告自己也在传送门位置 —— 房主端的代理会跟着进入范围。
+	_client_coop.call("report_local_state", _portal.global_position, false)
+	_advance(Stage.PORTAL_VERIFY)
+
+
+func _tick_portal_verify() -> void:
+	if _frames - _stage_mark < 60:
+		return
+	_check(_portal.is_complete(),
+		"两端都到齐后传送门应当开放")
 	_finish()
+
+
+var _portal: Node = null
+var _host_player: Node2D = null
 
 
 # --- 框架 ---------------------------------------------------------------------

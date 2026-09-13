@@ -115,6 +115,11 @@ func setOwner(player):
 func _process(delta):
 	if Utils.freeze_frame:
 		delta = 0.0
+	# 玩家死了就不该再能开枪。
+	# 原来没有这个判断：联机时客户端的角色已经倒下，枪的 _process 照跑，
+	# 于是出现「尸体一直在开枪」，而且那些子弹还会经由 Coop 上报伤害。
+	if player != null and player.is_dead:
+		return
 	var mouse_pos = get_global_mouse_position()
 	direction = (mouse_pos - gun_tip.global_position).normalized()
 	
