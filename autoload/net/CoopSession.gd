@@ -821,6 +821,11 @@ func _process(delta: float) -> void:
 func _broadcast_world_states() -> void:
 	_trace_once("broadcast", "房主开始广播世界状态（玩家 %d 怪物 %d）" % [_player_states.size(), _monster_nodes.size()])
 	if not _player_states.is_empty():
+		# 房主也必须把权威位置应用到**本端**的远端代理节点。
+		# 下面那个 RPC 是 call_remote，房主自己不执行 —— 少了这一句，房主端的
+		# 队友角色会永远停在出生点，而客户端那边一切正常，所以症状只出现在
+		# 一侧（「客户端看得到房主，房主看不到客户端」）。
+		_apply_player_states(_player_states)
 		_sync_player_states.rpc(_player_states)
 	var monsters := _collect_monster_states()
 	if not monsters.is_empty():
@@ -861,23 +866,23 @@ func _sync_monster_states(snapshot: Dictionary) -> void:
 			node.global_position = target
 
 
-func _broadcast_player_states() -> void:
-	if _player_states.is_empty():
-		return
-	_sync_player_states.rpc(_player_states)
-
-
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _sync_player_states(snapshot: Dictionary) -> void:
 	_trace_once("sync_recv", "客户端收到房主广播的 %d 个玩家位置" % snapshot.size())
+	_apply_player_states(snapshot)
+
+
+## 把一份权威玩家位置快照应用到本端的远端代理节点。
+## 自己的角色由本地预测驱动，不接受远端覆盖。
+func _apply_player_states(snapshot: Dictionary) -> void:
+	var local_id := int(_net().get_unique_id())
 	for raw_id in snapshot.keys():
 		var peer_id := int(raw_id)
-		# 自己的角色是本地预测的，不接受远端覆盖。
-		if peer_id == _net().get_unique_id():
+		if peer_id == local_id:
 			continue
 		var state: Dictionary = snapshot[raw_id]
 		_player_states[peer_id] = state
-		var node: Node2D = get_player_node(peer_id)
+		var node := get_player_node(peer_id)
 		if node != null and node.has_method("apply_remote_state"):
 			node.call("apply_remote_state", state.get("p", node.global_position), bool(state.get("flip", false)))
 

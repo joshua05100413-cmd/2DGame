@@ -612,6 +612,11 @@ func _tick_position_sync() -> void:
 
 	# 房主把自己的位置写进权威表，Coop 会周期性广播给客户端。
 	_host_coop.call("report_local_state", Vector2(777, 333), true)
+	# 反过来也要成立：客户端上报位置后，**房主端**的代理节点必须跟着动。
+	# 曾经房主只广播、不把快照应用到本端（RPC 是 call_remote，房主自己不执行），
+	# 于是房主端的队友角色永远停在出生点 —— 症状就是「客户端看得到房主，
+	# 房主看不到客户端」这种单侧失灵。
+	_client_coop.call("report_local_state", Vector2(555, 222), false)
 	_advance(Stage.LATE_JOIN)
 
 
@@ -648,6 +653,15 @@ func _verify_position_sync() -> void:
 	_check(int(host_proxy.get("applied_states")) > 0, "客户端应当收到过房主的位置同步")
 	_check(Vector2(host_proxy.get("last_applied")).is_equal_approx(Vector2(777, 333)),
 		"客户端上的房主代理应移动到 (777,333)，实际 " + str(host_proxy.get("last_applied")))
+
+	# 反向：房主端的客户端代理也必须跟随客户端上报的位置。
+	var client_peer: int = int(_client_net.call("get_unique_id"))
+	var host_sees_client: Node = _host_coop.call("get_player_node", client_peer)
+	_check(host_sees_client != null, "房主端应当有客户端的代理节点")
+	if host_sees_client != null:
+		_say("[coop] 房主端的客户端代理 last_applied=" + str(host_sees_client.get("last_applied")))
+		_check(Vector2(host_sees_client.get("last_applied")).is_equal_approx(Vector2(555, 222)),
+			"房主端的客户端代理应移动到 (555,222)，实际 " + str(host_sees_client.get("last_applied")))
 
 
 func _start_late_joiner() -> void:
