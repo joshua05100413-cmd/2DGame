@@ -6,7 +6,13 @@ extends Node2D
 const HERO_SCENE = preload("res://game/hero/Hero.tscn")
 const REMOTE_PLAYER = preload("res://game/net/RemotePlayer.gd")
 const GHOUL_PRE = preload("res://game/monster/Ghoul/Ghoul.tscn")
-const VISUAL_BULLET = preload("res://game/bullets/Bullet.tscn")
+## 联机时用来复现队友弹道的「表现子弹」。
+##
+## 必须挑一个带 PointLight2D 的子弹场景：这张地图用 CanvasModulate 压暗到
+## 0.04，子弹基本靠自身的光照亮，用没有光的场景（例如 Bullet.tscn，它只有
+## Bullet.gd 没有 Sprite2D/PointLight2D 子节点）在屏幕上等于隐形。
+## 项目里绝大多数枪用的都是 SmpBullet，所以表现层统一用它。
+const VISUAL_BULLET = preload("res://game/bullets/SmpBullet.tscn")
 
 ## 联机时这只怪物的类型键，必须与 CoopWorld 注册的一致。
 const COOP_MONSTER_TYPE := "ghoul"

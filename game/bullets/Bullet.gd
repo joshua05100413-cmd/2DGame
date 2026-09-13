@@ -57,7 +57,11 @@ func fire():
 	get_tree().root.add_child(ins)
 	ins.start(velocity / 2)
 	
-	create_tween().tween_property(light2d,"energy",0.3,0.2)
+	# 有些子弹场景没有 PointLight2D（例如 Bullet.tscn）。
+	# 不判断就 tween_property(null, ...) 的话会刷
+	# "Parameter p_target is null" + "Tween started with no Tweeners"。
+	if light2d != null:
+		create_tween().tween_property(light2d,"energy",0.3,0.2)
 
 func _process(delta):
 	#if Utils.freeze_frame:
