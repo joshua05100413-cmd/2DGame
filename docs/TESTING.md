@@ -178,7 +178,20 @@ IP 的话，直连是不通的，**改代码也解决不了**，这不是 bug。
 
 ## 5. Steam 真机
 
-需要先装 Godot 4.4 兼容的 GodotSteam 扩展（并删掉 `.gdignore`）。
+```bat
+tools\setup_steam.bat
+```
+
+一条命令装好兼容 Godot 4.4 的 GodotSteam 扩展（扩展本身不进仓库，见 `.gitignore`）。
+
+> ⚠️ **需要两个不同的 Steam 账号。**
+> 同一台电脑双开时两个实例共用同一个 Steam 客户端会话，`getSteamID()` 返回同一个
+> 值，房主和客户端会撞成同一个 peer，握手没有意义。Steam 路径至少要两个人。
+> 一台电脑快速自测请继续用 **ENet**（第 3 节）。
+
+开房后大厅会直接写出房主的 64 位 SteamID，把它发给队友，队友填进地址栏即可 ——
+那一串在 Steam 界面上是找不到的。
+
 完整步骤、验证清单和排查表在 **[STEAM_SETUP.md](STEAM_SETUP.md)**。
 
 ---

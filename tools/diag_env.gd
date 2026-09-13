@@ -26,6 +26,30 @@ func _initialize() -> void:
 	print("[diag] MultiplayerSynchronizer available: ", ClassDB.class_exists("MultiplayerSynchronizer"))
 	print("[diag] WebSocketPeer available: ", ClassDB.class_exists("WebSocketPeer"))
 
+	_dump_steam_peer_api()
+
 	# --- Rendering / feature flags -------------------------------------------
 	print("[diag] renderer=", ProjectSettings.get_setting("rendering/renderer/rendering_method", "?"))
 	quit()
+
+
+## 打印 SteamMultiplayerPeer 的真实方法签名。
+##
+## SteamTransport 是按这些方法名写的，但它只在「扩展不可用」的环境里跑过单测，
+## 签名对不对从来没被真实验证过。这里直接把 GDExtension 注册进来的方法表打出来，
+## 用真实二进制当权威答案，而不是靠翻文档。
+func _dump_steam_peer_api() -> void:
+	const PEER := "SteamMultiplayerPeer"
+	if not ClassDB.class_exists(PEER):
+		print("[diag] ", PEER, " 不存在，跳过方法表")
+		return
+	print("[diag] --- ", PEER, " 方法表 ---")
+	for method in ClassDB.class_get_method_list(PEER, true):
+		var args: Array = []
+		for argument in method.get("args", []):
+			args.append("%s: %s" % [argument.get("name", "?"), argument.get("type", TYPE_NIL)])
+		print("[diag]   %s(%s) -> %s" % [
+			method.get("name", "?"),
+			", ".join(args),
+			method.get("return", {}).get("type", TYPE_NIL),
+		])

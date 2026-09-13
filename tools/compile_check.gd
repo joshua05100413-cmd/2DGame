@@ -98,12 +98,25 @@ func _scan(dir_path: String) -> void:
 			continue
 		var full := dir_path.path_join(entry)
 		if dir.current_is_dir():
-			if not SKIP_DIRS.has(entry):
+			if not SKIP_DIRS.has(entry) and not _is_gdignored(full):
 				_scan(full)
 		else:
 			_check(entry, full)
 		entry = dir.get_next()
 	dir.list_dir_end()
+
+
+## 引擎会完全忽略带 `.gdignore` 的目录，这个遍历必须跟着一起忽略。
+##
+## 为什么：`.gdignore` 是第三方扩展的开关。GodotSteam 的 editor/*.gd 引用
+## `Steam` 单例，扩展没加载时这些脚本解析必然失败。实测过一次 —— 装了扩展、
+## 但用 .gdignore 把它关掉时，整个 compile 套件变红，而报错的全是别人写的
+## 编辑器代码，不是本项目的代码。
+##
+## 换句话说：引擎看不见的东西，检查器也不该看见，否则「扩展装没装」会变成
+## 一个和本项目无关的编译失败源。
+func _is_gdignored(dir_path: String) -> bool:
+	return FileAccess.file_exists(dir_path.path_join(".gdignore"))
 
 
 func _check(file_name: String, full_path: String) -> void:

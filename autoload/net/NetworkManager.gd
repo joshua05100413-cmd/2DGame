@@ -294,19 +294,47 @@ func describe() -> String:
 
 ## 玩家默认名：优先 Steam 昵称，其次系统用户名。
 ## 只通过 TransportFactory 探测后端，绝不直接依赖 SteamTransport 的实现细节。
+##
+## 这里**只读已经初始化好的** Steam 昵称（[method SteamTransport.steam_persona_name]）。
+## 以前是直接 Engine.get_singleton("Steam") 再调 getPersonaName()，而 SteamAPI
+## 从没被初始化过 —— 于是游戏一启动就 signal 11 / 堆损坏，因为
+## SteamFriends() 是空指针。启动阶段不该碰任何需要初始化状态的 Steam API。
 func default_player_name() -> String:
-	if TransportFactory.is_available(TransportFactory.Backend.STEAM):
-		var steam: Object = Engine.get_singleton("Steam")
-		if steam != null and steam.has_method("getPersonaName"):
-			var persona := str(steam.call("getPersonaName"))
-			if not persona.is_empty():
-				return persona.substr(0, MAX_NAME_LENGTH)
+	var persona := SteamTransport.steam_persona_name()
+	if not persona.is_empty():
+		return persona.substr(0, MAX_NAME_LENGTH)
+	return _os_player_name()
+
+
+## 系统用户名兜底。单独抽出来是因为 [method prepare_steam_backend] 需要判断
+## 「玩家还没自己改过名字」——而那时候 default_player_name() 已经返回 Steam
+## 昵称了，拿它比较永远不相等。
+func _os_player_name() -> String:
 	var os_name := OS.get_environment("USERNAME")
 	if os_name.is_empty():
 		os_name = OS.get_environment("USER")
 	if os_name.is_empty():
 		os_name = "Player"
 	return os_name.substr(0, MAX_NAME_LENGTH)
+
+
+## 为 Steam 后端做准备：初始化 SteamAPI 并把默认名换成 Steam 昵称。
+##
+## 时机由大厅决定（玩家在下拉框里选中 Steam P2P 时），而不是在启动时 ——
+## 单机玩家不该因为打开一次大厅就把 Steam 拉起来。
+## 返回 "" 表示准备好了，否则是不可用原因。
+func prepare_steam_backend() -> String:
+	var reason := SteamTransport.ensure_steam_ready()
+	if not reason.is_empty():
+		return reason
+	# 只在玩家没有自己改过名字时才替换，否则会踩掉他刚输入的内容。
+	if local_player_name == _os_player_name():
+		var persona := SteamTransport.steam_persona_name()
+		if not persona.is_empty():
+			set_local_player_name(persona)
+	return ""
+
+
 
 
 func set_local_player_name(new_name: String) -> void:

@@ -113,15 +113,19 @@ func host_game() -> void:
 
 ## 开房成功后状态栏该写什么。
 ##
-## 必须把本机地址写出来：ENet 是直连后端，队友要填房主的 IP，而房主自己看不到
-## 自己该报什么。以前这里只写端口，跨机器测试时房主只能靠猜或者另外去查 ipconfig。
+## 必须把「队友要填什么」写出来：两种后端都是直连，客户端要填房主的寻址信息，
+## 而房主自己看不到自己该报什么。以前这里只写端口，跨机器测试时房主只能靠猜
+## 或者另外去查 ipconfig。Steam 后端更麻烦 —— 要报的是一串 64 位数字，
+## 光靠玩家自己是找不到的。
 ##
-## 两种连法分开写：同一台电脑双开填 127.0.0.1，别的电脑必须填内网地址。
+## ENet 的两种连法分开写：同一台电脑双开填 127.0.0.1，别的电脑必须填内网地址。
 ## 不写清楚的话，房主很可能把 127.0.0.1 报给不在本机的人，对方会一直连到超时。
 ##
 ## 这段话很短是故意的：大厅状态栏的字体只有 7px，viewport 逻辑宽度只有 410px，
 ## 多写两行就会把下面的成员列表和按钮挤出屏幕。
 func _hosting_status(port: int) -> String:
+	if selected_backend() == TransportFactory.Backend.STEAM:
+		return _steam_hosting_status()
 	var address := NetManager.local_address_hint()
 	if address.is_empty():
 		return "已开房 %d ｜ 无网卡地址，仅可本机双开" % port
@@ -131,6 +135,18 @@ func _hosting_status(port: int) -> String:
 	if extra > 0:
 		text += "（另有 %d 个网卡地址）" % extra
 	return text
+
+
+## Steam 开房后要报给队友的是房主的 64 位 SteamID。
+##
+## 这是 Steam 路径上最容易卡住的一步：SteamID 是一串 17 位数字，玩家在 Steam
+## 界面上根本看不到完整值（个人资料页只显示好友代码或自定义 URL）。不主动报出来，
+## 加入方就只能去翻 Steam 的配置文件。
+func _steam_hosting_status() -> String:
+	var steam_id := SteamTransport.local_steam_id()
+	if steam_id == 0:
+		return "已开房（Steam）｜ 拿不到 SteamID，请确认 Steam 已登录"
+	return "已开房 SteamID %d ｜ 把它发给队友，队友填进地址栏" % steam_id
 
 
 func join_game() -> void:
@@ -163,7 +179,35 @@ func leave_session() -> void:
 func _on_backend_selected(index: int) -> void:
 	_refresh_backend_hint(index)
 	# Steam 走 64 位 SteamID，ENet 走 IP，提示语不同。
-	_address_edit.placeholder_text = _address_placeholder(selected_backend())
+	var backend := selected_backend()
+	_address_edit.placeholder_text = _address_placeholder(backend)
+	_prepare_selected_backend(backend)
+
+
+## 选中 Steam 时才初始化 SteamAPI，并把玩家名换成 Steam 昵称。
+##
+## 刻意不放在游戏启动时：单机玩家不该因为打开一次大厅就把 Steam 拉起来、
+## 让 Steam 显示「正在玩 Spacewar」。放在这里也保证了「先启动 Steam，再选
+## Steam P2P」这个最自然的操作顺序能直接成功。
+func _prepare_selected_backend(backend: int) -> void:
+	if backend != TransportFactory.Backend.STEAM:
+		return
+	var net: Variant = _net()
+	if net == null:
+		return
+	var reason: String = net.prepare_steam_backend()
+	if reason.is_empty():
+		_say_steam_ready()
+	else:
+		_set_status(reason, Color(1.0, 0.75, 0.5))
+
+
+## 准备好了就把 Steam 昵称同步到名字输入框，让玩家看到自己会以什么名字进房间。
+func _say_steam_ready() -> void:
+	var persona := SteamTransport.steam_persona_name()
+	if not persona.is_empty():
+		_name_edit.text = persona
+	_set_status("Steam 已就绪，可以开房或填房主 SteamID 加入。", Color(0.6, 1.0, 0.7))
 
 
 func _on_connection_failed(reason: String) -> void:

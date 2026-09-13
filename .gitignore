@@ -25,3 +25,18 @@ steam_settings/
 ColdClientLoader*
 Goldberg*
 SmartSteamEmu*
+
+# GodotSteam GDExtension binaries. Installed by tools/setup_steam.bat, not committed.
+#
+# Why it is not in the repo:
+#   * The full plugin is ~92 MB of prebuilt binaries (the Android build alone is
+#     33 MB), against a 45 MB repository.
+#   * Committing only win64 is worse than either extreme: the .gdextension lists
+#     per-platform libraries, and Godot logs "No GDExtension library found for
+#     current OS and architecture" when the running platform is missing. That
+#     error would fail the headless audit on the Linux CI runner, which today
+#     never sees the extension at all.
+#   * A pinned download script is reproducible; a stale committed DLL is not.
+#     The old committed copy was built for Godot 4.2 and had to be neutralised
+#     with a .gdignore, which is exactly the trap this avoids.
+addons/godotsteam/

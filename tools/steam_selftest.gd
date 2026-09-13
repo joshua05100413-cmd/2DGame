@@ -34,6 +34,8 @@ const DEAD_PORT := 27524
 const MAX_FRAMES := 2400
 const SETTLE := 20
 const FAKE_STEAM_ID := 76561198000000001
+## ENet 替身需要的连接数上限。真实的 create_host 不收这个参数（见 _make_steam_transport）。
+const HOST_MAX_CLIENTS := 4
 const HOST_NAME := "SteamHost"
 const CLIENT_NAME := "SteamClient"
 
@@ -41,7 +43,19 @@ const CLIENT_NAME := "SteamClient"
 ## Steam 单例的替身：只需要 SteamTransport 实际会调用的那几个方法。
 class FakeSteam extends RefCounted:
 	var relay_calls := 0
+	var init_calls := 0
+	var running := true
 	var persona := "FakeSteamUser"
+
+	func isSteamRunning() -> bool:
+		return running
+
+	## 真实签名：steamInit(embed_callbacks: bool = false) -> Dictionary。
+	func steamInit(_embed_callbacks: bool = false) -> Dictionary:
+		init_calls += 1
+		if not running:
+			return {"status": 1, "verbal": "Steam not running"}
+		return {"status": 0, "verbal": "OK"}
 
 	func initRelayNetworkAccess() -> void:
 		relay_calls += 1
@@ -98,26 +112,43 @@ func _verify_degradation() -> void:
 	var reason := SteamTransport.probe_reason()
 	_say("[steam] 真实探测结果：" + ("可用" if reason.is_empty() else reason))
 
+	# --- 崩溃回归：未初始化就碰 Steam API ----------------------------------
+	#
+	# 这里踩过一次真实的坑，而且现象极具误导性：NetworkManager._ready() 调了
+	# Steam.getPersonaName()，游戏一启动就 signal 11 / 堆损坏，日志里只有一行
+	#   ERROR: Friends class not found, Steam may not be initialized: getPersonaName
+	# 看着像「GodotSteam 4.22 和 Godot 4.4 不兼容」（我一开始就是这么判断的，
+	# 还去下了另一个版本的扩展），实际是「SteamAPI 从没初始化过」。
+	#
+	# 所以这几条断言必须无条件成立：在没有任何人调用 ensure_steam_ready() 之前，
+	# 那两个取值函数只能安静地返回空值，绝对不能去碰真实 Steam。
+	_check(not SteamTransport.is_steam_initialized(),
+		"还没有开房/加入之前，SteamAPI 不应当已经被初始化")
+	_check(SteamTransport.steam_persona_name().is_empty(),
+		"未初始化时 steam_persona_name() 必须返回空串而不是去调 getPersonaName")
+	_check(SteamTransport.local_steam_id() == 0,
+		"未初始化时 local_steam_id() 必须返回 0 而不是去调 getSteamID")
+
 	if SteamTransport.is_available():
-		# 真机上装了扩展：降级分支不适用，但仍然要保证接口自洽。
-		_say("[steam] 本机检测到 GodotSteam 扩展，跳过降级断言")
+		# 真机上装了扩展且 Steam 已登录：降级分支不适用，但仍然要保证接口自洽。
+		_say("[steam] 本机 Steam 后端可用，跳过降级断言")
 		return
 
-	_check(not SteamTransport.is_available(), "扩展缺失时 is_available() 必须为 false")
-	_check(not reason.is_empty(), "扩展缺失时必须给出不可用原因")
+	_check(not SteamTransport.is_available(), "后端不可用时 is_available() 必须为 false")
+	_check(not reason.is_empty(), "后端不可用时必须给出不可用原因")
 	_check(not TransportFactory.is_available(TransportFactory.Backend.STEAM),
-		"扩展缺失时工厂必须报告 Steam 后端不可用")
+		"后端不可用时工厂必须报告 Steam 后端不可用")
 	_check(TransportFactory.create(TransportFactory.Backend.STEAM) == null,
-		"扩展缺失时工厂应当返回 null 而不是抛异常")
+		"后端不可用时工厂应当返回 null 而不是抛异常")
 	var hint := TransportFactory.unavailable_reason(TransportFactory.Backend.STEAM)
 	_check(hint.contains("GodotSteam") or hint.contains("Steam"),
-		"给玩家的提示应当指明是 Steam 扩展的问题，实际：" + hint)
+		"给玩家的提示应当指明是 Steam 的问题，实际：" + hint)
 
 	var transport := SteamTransport.new()
-	_check(transport.host(4, 0) != OK, "扩展缺失时 host() 必须失败")
+	_check(transport.host(4, 0) != OK, "后端不可用时 host() 必须失败")
 	_check(transport.state == NetworkTransport.State.FAILED, "host() 失败后状态应为 FAILED")
 	_check(not transport.last_error.is_empty(), "host() 失败后必须带可读原因")
-	_check(transport.join(str(FAKE_STEAM_ID), 0) != OK, "扩展缺失时 join() 必须失败")
+	_check(transport.join(str(FAKE_STEAM_ID), 0) != OK, "后端不可用时 join() 必须失败")
 	_check(transport.state == NetworkTransport.State.FAILED, "join() 失败后状态应为 FAILED")
 	_check(not transport.is_ready, "失败后不应当认为传输层已就绪")
 
@@ -164,9 +195,10 @@ func _start_loopback() -> void:
 	_check(not host_call.is_empty(), "Steam 开房应当调用 create_host")
 	if not host_call.is_empty():
 		var args: Array = host_call["args"]
+		_check(args.size() == 1,
+			"create_host 只应当收到 virtual port 这一个参数，实际 %d 个：%s" % [args.size(), str(args)])
 		_check(int(args[0]) == SteamTransport.DEFAULT_VIRTUAL_PORT,
 			"create_host 的 virtual port 应当是 %d，实际 %s" % [SteamTransport.DEFAULT_VIRTUAL_PORT, str(args[0])])
-		_check(int(args[1]) == 4, "create_host 的人数上限应当是 4，实际 " + str(args[1]))
 	_check(_fake_steam.relay_calls == 1, "开房应当初始化一次 Steam 中继网络，实际 " +
 		str(_fake_steam.relay_calls))
 
@@ -181,6 +213,35 @@ func _start_loopback() -> void:
 			"create_client 应当带上房主 SteamID，实际 " + str(args[0]))
 		_check(int(args[1]) == SteamTransport.DEFAULT_VIRTUAL_PORT,
 			"create_client 的 virtual port 应当与房主一致，实际 " + str(args[1]))
+
+	_verify_against_real_signature(host_call, client_call)
+
+
+## 拿真实 GDExtension 的方法表来核对参数个数。
+##
+## 这条断言是补上一个真实踩过的坑：create_host 的真实签名是
+## create_host(virtual_port)，**只有一个参数**，而代码传了
+## [virtual_port, max_clients] 两个。单测里的注入桩照单全收，于是 39 项全绿，
+## 真机上却永远开不了房 —— 因为多传的参数会让调用直接失败。
+##
+## 扩展装在本机时，ClassDB 里的方法表就是权威答案，直接拿来比。没装扩展时
+## 退化成对已知签名的断言，仍然能挡住参数个数被改错。
+func _verify_against_real_signature(host_call: Dictionary, client_call: Dictionary) -> void:
+	if not ClassDB.class_exists("SteamMultiplayerPeer"):
+		_say("[steam] 本机没有 SteamMultiplayerPeer，跳过与真实签名的交叉核对")
+		return
+
+	var expected := {}
+	for method in ClassDB.class_get_method_list("SteamMultiplayerPeer", true):
+		expected[String(method.get("name", ""))] = method.get("args", []).size()
+	_say("[steam] 真实签名参数个数：" + str(expected))
+
+	_check(expected.get("create_host", -1) == host_call.get("args", []).size(),
+		"create_host 的实参个数应当等于真实签名 %d，实际 %d" % [
+			expected.get("create_host", -1), host_call.get("args", []).size()])
+	_check(expected.get("create_client", -1) == client_call.get("args", []).size(),
+		"create_client 的实参个数应当等于真实签名 %d，实际 %d" % [
+			expected.get("create_client", -1), client_call.get("args", []).size()])
 
 
 func _make_steam_transport(api: MultiplayerAPI, role: String, port: int) -> SteamTransport:
@@ -199,7 +260,11 @@ func _make_steam_transport(api: MultiplayerAPI, role: String, port: int) -> Stea
 			return null
 		match String(method):
 			"create_host":
-				return enet.create_server(port, int(args[1]))
+				# create_host 的真实签名只有 virtual_port 一个参数，人数由
+				# 「谁知道房主 SteamID」决定，Steam 侧不做限制。ENet 必须给个
+				# 上限，这里固定一个测试值，不再从实参里取 —— 之前就是从
+				# args[1] 取的，而实参只有 1 个，于是越界报错。
+				return enet.create_server(port, HOST_MAX_CLIENTS)
 			"create_client":
 				return enet.create_client("127.0.0.1", port)
 			"get_peer_id_for_steam_id":
