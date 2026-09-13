@@ -90,10 +90,38 @@ signal roundVictory() #回合胜利
 signal monsterCreate() #怪物生成
 signal onNextLevel(level) #下一关
 
+## 联机时向客户端广播关卡进度的间隔（秒）。
+const COOP_PUBLISH_INTERVAL := 0.25
+var _coop_publish_accum := 0.0
+
 func _ready() -> void:
 	timer.wait_time = 0.1
 	timer.timeout.connect(self._timeout)
 	add_child(timer)
+	# 联机：客户端不自己推进关卡，改为消费房主同步过来的权威状态。
+	Coop.level_state_changed.connect(_on_coop_level_state)
+
+
+## 客户端：把房主同步过来的关卡状态写回本地，UI 无需改动。
+func _on_coop_level_state() -> void:
+	if Coop.is_host():
+		return
+	level = Coop.level
+	level_time = Coop.time_left
+	level_info.kill = Coop.kills
+	level_info.gold = Coop.gold
+	emit_signal("onTimeTick", int(level_time))
+
+
+## 房主：把权威关卡进度广播出去（按固定间隔节流）。
+func _publish_coop_state() -> void:
+	if not Net.is_multiplayer_active() or not Coop.is_host():
+		return
+	_coop_publish_accum += 0.1
+	if _coop_publish_accum < COOP_PUBLISH_INTERVAL:
+		return
+	_coop_publish_accum = 0.0
+	Coop.publish_level_state(level, level_time, level_info.kill, level_info.gold, timer.time_left > 0.0)
 
 func roundStart():
 	if level > 30:
@@ -115,10 +143,15 @@ func getLevelMonsterData(): #读取当前关卡怪物信息
 	return monster_attr[str(level)]
 
 func timerStart(): #开始计时
+	# 联机：关卡进程由房主权威推进，客户端只显示同步过来的状态。
+	if Net.is_multiplayer_active() and not Coop.is_host():
+		return
 	isPause(false)
 	timer.start()
 
 func timerStop(): #结束计时
+	if Net.is_multiplayer_active() and not Coop.is_host():
+		return
 	timer.stop()
 
 func isPause(is_pause): #暂停
@@ -134,6 +167,7 @@ func _timeout():
 	else:
 		onMonsterCreate()
 		emit_signal("onTimeTick",int(level_time))
+	_publish_coop_state()
 
 func onMonsterCreate():
 	wait_time_temp += 0.1

@@ -1,0 +1,428 @@
+extends Node
+class_name NetManager
+## 联机总入口（自动加载为 `Net`）。
+##
+## 职责：
+##   * 持有当前 [NetworkTransport] 并每帧驱动它
+##   * 维护「peer_id -> 玩家信息」的权威名单
+##   * 暴露与后端无关的 RPC，游戏代码不需要知道下面是 ENet 还是 Steam
+##
+## 游戏逻辑只允许访问本节点（`Net`），绝不直接碰 ENet / Steam。
+## 这正是 Steam 后端可以整体替换而不改玩法代码的原因。
+##
+## 权威模型（合作生存）
+##   * 房主是权威方：怪物、掉落、关卡进程、伤害结算都由房主决定。
+##   * 客户端只本地预测自己的移动/瞄准/开火，把动作上报房主校验。
+##   * 详细设计见 docs/MULTIPLAYER_PLAN.md。
+##
+## 后端无关性注意：房主的 peer id 在 ENet 下是 1，在 Steam P2P 下是由
+## SteamID 派生的其它值。因此本文件**任何地方都不得硬编码 1**，一律走
+## [method get_server_id]。
+
+## 任意网络状态变化（连接/断开/名单变化），供 UI 统一刷新。
+signal state_changed()
+signal server_started()
+signal server_stopped()
+signal joined_server()
+signal connection_failed(reason: String)
+signal players_changed()
+signal local_player_registered(peer_id: int)
+## 客户端侧：到房主的连接断了。
+signal server_disconnected()
+
+enum Mode {
+	OFFLINE, ## 未联机（单机或菜单）。
+	HOSTING, ## 本机是房主。
+	CLIENT,  ## 本机是客户端。
+}
+
+const DEFAULT_PORT := 27015
+const DEFAULT_MAX_CLIENTS := 8
+## 玩家名长度上限，避免 RPC 负载过大。
+const MAX_NAME_LENGTH := 16
+
+## 当前选中的后端（[enum TransportFactory.Backend]）。
+var backend: int = TransportFactory.Backend.ENET
+## 当前传输层实例；未联机时为 null。
+var transport: NetworkTransport = null
+
+## 覆盖传输层创建逻辑。为空时走 [method TransportFactory.create]。
+## 无头测试用它注入绑定到独立 MultiplayerAPI 的传输实例。
+var transport_factory: Callable = Callable()
+
+## peer_id -> { "name": String, "ready": bool }
+var players: Dictionary = {}
+
+## 本机玩家名，连接时发给对端。
+var local_player_name: String = "Player"
+
+var mode: int = Mode.OFFLINE
+
+## 上一次失败/提示信息，供大厅显示。
+var last_error: String = ""
+
+## 打开后把每一次网络事件写进日志。联机问题排查时设 true。
+var verbose: bool = false
+
+
+func _trace(message: String) -> void:
+	if verbose:
+		print("[Net] " + message)
+
+
+func _ready() -> void:
+	# 跨场景存活：联机会话必须能挺过地图切换。
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	local_player_name = default_player_name()
+
+
+func _process(_delta: float) -> void:
+	if transport == null:
+		return
+	transport.poll()
+	# ENet / Steam 都没有统一的「失败」事件，只能由这里轮询超时状态。
+	_check_transport_failure()
+
+
+# --- 查询 ---------------------------------------------------------------------
+
+func is_host() -> bool:
+	return mode == Mode.HOSTING
+
+
+func is_client() -> bool:
+	return mode == Mode.CLIENT
+
+
+func is_online() -> bool:
+	return mode != Mode.OFFLINE
+
+
+## 联机会话是否真正可用（相对单机模式）。
+func is_multiplayer_active() -> bool:
+	return mode != Mode.OFFLINE and transport != null and transport.is_ready
+
+
+## 本机 peer id；单机时返回 1，保证调用方总能拿到合法 owner id。
+func get_unique_id() -> int:
+	if transport != null:
+		var id := transport.get_unique_id()
+		if id != 0:
+			return id
+	return 1
+
+
+## 权威方 peer id。
+func get_server_id() -> int:
+	return transport.get_server_id() if transport != null else 1
+
+
+func get_player_name(peer_id: int) -> String:
+	if players.has(peer_id):
+		return players[peer_id].get("name", "Player")
+	return "Player %d" % peer_id
+
+
+func get_sorted_peer_ids() -> Array:
+	var ids := players.keys()
+	ids.sort()
+	return ids
+
+
+func get_peer_count() -> int:
+	return players.size()
+
+
+## 供大厅列表使用的结构化快照。
+func get_player_list() -> Array:
+	var list: Array = []
+	for peer_id in get_sorted_peer_ids():
+		var info: Dictionary = players[peer_id]
+		list.append({
+			"id": peer_id,
+			"name": info.get("name", "Player"),
+			"ready": info.get("ready", false),
+			"is_local": peer_id == get_unique_id(),
+			"is_host": peer_id == get_server_id(),
+		})
+	return list
+
+
+## 日志用的诊断串。
+func describe() -> String:
+	if not is_multiplayer_active():
+		return "single-player"
+	return "%s | %s | peer %d | players %d" % [
+		transport.backend_name,
+		"host" if is_host() else "client",
+		get_unique_id(),
+		players.size(),
+	]
+
+
+# --- 会话生命周期 -------------------------------------------------------------
+
+## 玩家默认名：优先 Steam 昵称，其次系统用户名。
+## 只通过 TransportFactory 探测后端，绝不直接依赖 SteamTransport 的实现细节。
+func default_player_name() -> String:
+	if TransportFactory.is_available(TransportFactory.Backend.STEAM):
+		var steam: Object = Engine.get_singleton("Steam")
+		if steam != null and steam.has_method("getPersonaName"):
+			var persona := str(steam.call("getPersonaName"))
+			if not persona.is_empty():
+				return persona.substr(0, MAX_NAME_LENGTH)
+	var os_name := OS.get_environment("USERNAME")
+	if os_name.is_empty():
+		os_name = OS.get_environment("USER")
+	if os_name.is_empty():
+		os_name = "Player"
+	return os_name.substr(0, MAX_NAME_LENGTH)
+
+
+func set_local_player_name(new_name: String) -> void:
+	var trimmed := new_name.strip_edges().substr(0, MAX_NAME_LENGTH)
+	if trimmed.is_empty():
+		trimmed = "Player"
+	local_player_name = trimmed
+	if is_host() and players.has(get_server_id()):
+		players[get_server_id()]["name"] = local_player_name
+		_broadcast_players()
+
+
+func set_backend(new_backend: int) -> void:
+	if is_online():
+		push_warning("Net: 会话进行中不能切换后端，请先断开。")
+		return
+	backend = new_backend
+	state_changed.emit()
+
+
+## 开房。返回 [constant OK] 或错误码。
+func host_game(port: int = DEFAULT_PORT, max_clients: int = DEFAULT_MAX_CLIENTS) -> int:
+	_stop_transport()
+	last_error = ""
+	var t := _create_transport()
+	if t == null:
+		last_error = TransportFactory.unavailable_reason(backend)
+		connection_failed.emit(last_error)
+		return ERR_UNAVAILABLE
+	transport = t
+	_connect_transport_signals()
+
+	var err := transport.host(max_clients, port)
+	if err != OK:
+		last_error = transport.last_error
+		connection_failed.emit(last_error)
+		_stop_transport()
+		return err
+
+	mode = Mode.HOSTING
+	# 房主就是权威方，天然属于会话。
+	var host_id := transport.get_server_id()
+	players = {host_id: {"name": local_player_name, "ready": false}}
+	players_changed.emit()
+	server_started.emit()
+	local_player_registered.emit(host_id)
+	state_changed.emit()
+	return OK
+
+
+## 加入房间。返回 [constant OK] 或错误码。
+func join_game(address: String, port: int = DEFAULT_PORT) -> int:
+	_stop_transport()
+	last_error = ""
+	var t := _create_transport()
+	if t == null:
+		last_error = TransportFactory.unavailable_reason(backend)
+		connection_failed.emit(last_error)
+		return ERR_UNAVAILABLE
+	transport = t
+	_connect_transport_signals()
+
+	var err := transport.join(address, port)
+	if err != OK:
+		last_error = transport.last_error
+		connection_failed.emit(last_error)
+		_stop_transport()
+		return err
+
+	mode = Mode.CLIENT
+	# 具体名单由房主回包填充。
+	players = {}
+	state_changed.emit()
+	return OK
+
+
+## 离开会话，回到单机。
+func stop() -> void:
+	var was_host := is_host()
+	_stop_transport()
+	mode = Mode.OFFLINE
+	players.clear()
+	players_changed.emit()
+	if was_host:
+		server_stopped.emit()
+	state_changed.emit()
+
+
+## 向房主上报「我准备好了」。
+func set_ready(is_ready: bool = true) -> void:
+	if not is_multiplayer_active():
+		return
+	if is_host():
+		var host_id := get_server_id()
+		if players.has(host_id):
+			players[host_id]["ready"] = is_ready
+			_broadcast_players()
+	else:
+		_set_ready.rpc_id(get_server_id(), is_ready)
+
+
+# --- 内部：传输层装配 ---------------------------------------------------------
+
+func _create_transport() -> NetworkTransport:
+	if transport_factory.is_valid():
+		return transport_factory.call(backend) as NetworkTransport
+	return TransportFactory.create(backend)
+
+
+func _stop_transport() -> void:
+	if transport != null:
+		_disconnect_transport_signals()
+		transport.close()
+		transport = null
+
+
+func _connect_transport_signals() -> void:
+	if transport == null:
+		return
+	if not transport.peer_joined.is_connected(_on_peer_joined):
+		transport.peer_joined.connect(_on_peer_joined)
+	if not transport.peer_left.is_connected(_on_peer_left):
+		transport.peer_left.connect(_on_peer_left)
+	if not transport.closed.is_connected(_on_transport_closed):
+		transport.closed.connect(_on_transport_closed)
+	if not transport.state_changed.is_connected(_on_transport_state_changed):
+		transport.state_changed.connect(_on_transport_state_changed)
+
+
+func _disconnect_transport_signals() -> void:
+	if transport == null:
+		return
+	if transport.peer_joined.is_connected(_on_peer_joined):
+		transport.peer_joined.disconnect(_on_peer_joined)
+	if transport.peer_left.is_connected(_on_peer_left):
+		transport.peer_left.disconnect(_on_peer_left)
+	if transport.closed.is_connected(_on_transport_closed):
+		transport.closed.disconnect(_on_transport_closed)
+	if transport.state_changed.is_connected(_on_transport_state_changed):
+		transport.state_changed.disconnect(_on_transport_state_changed)
+
+
+func _check_transport_failure() -> void:
+	if transport == null:
+		return
+	if transport.state != NetworkTransport.State.FAILED:
+		return
+	last_error = transport.last_error
+	_stop_transport()
+	mode = Mode.OFFLINE
+	players.clear()
+	players_changed.emit()
+	connection_failed.emit(last_error)
+	state_changed.emit()
+
+
+# --- 内部：传输层回调 ---------------------------------------------------------
+
+func _on_transport_state_changed(new_state: int) -> void:
+	_trace("传输层状态 -> %d（mode=%d is_client=%s）" % [new_state, mode, str(is_client())])
+	state_changed.emit()
+	if new_state == NetworkTransport.State.CONNECTED and is_client():
+		# 向房主报到；它会回一份完整名单。
+		_trace("向房主 %d 报到，名字=%s" % [get_server_id(), local_player_name])
+		_register_player.rpc_id(get_server_id(), local_player_name)
+		joined_server.emit()
+
+
+func _on_transport_closed() -> void:
+	_stop_transport()
+	mode = Mode.OFFLINE
+	players.clear()
+	players_changed.emit()
+	server_disconnected.emit()
+	state_changed.emit()
+
+
+# --- 内部：名单同步 -----------------------------------------------------------
+
+func _on_peer_joined(peer_id: int) -> void:
+	# 只有权威方维护并广播名单。
+	if not is_host():
+		return
+	_trace("peer 加入：%d" % peer_id)
+	# ORDERING MATTERS: SceneTree polls the MultiplayerAPI *before* running node
+	# _process(), so a fast client's _register_player RPC can already have filled
+	# in the real name by the time this fires. Overwriting unconditionally would
+	# clobber that name back to the placeholder. Only seed a missing entry.
+	if players.has(peer_id):
+		return
+	players[peer_id] = {"name": "Player", "ready": false}
+	_broadcast_players()
+
+
+func _on_peer_left(peer_id: int) -> void:
+	if not is_host():
+		return
+	_trace("peer 离开：%d" % peer_id)
+	players.erase(peer_id)
+	_broadcast_players()
+
+
+# --- RPC ---------------------------------------------------------------------
+
+## 客户端向房主报到。
+@rpc("any_peer", "call_remote", "reliable")
+func _register_player(player_name: String) -> void:
+	if not is_host():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	_trace("收到报到：sender=%d name=%s" % [sender, player_name])
+	if sender == 0:
+		return
+	players[sender] = {
+		"name": str(player_name).strip_edges().substr(0, MAX_NAME_LENGTH),
+		"ready": false,
+	}
+	_broadcast_players()
+
+
+## 客户端上报准备状态，房主转发给所有人。
+@rpc("any_peer", "call_remote", "reliable")
+func _set_ready(is_ready: bool) -> void:
+	if not is_host():
+		return
+	var sender := multiplayer.get_remote_sender_id()
+	if players.has(sender):
+		players[sender]["ready"] = is_ready
+		_broadcast_players()
+
+
+## 房主把名单推给所有人。
+@rpc("authority", "call_remote", "reliable")
+func _sync_players(snapshot: Dictionary) -> void:
+	players = snapshot
+	players_changed.emit()
+	state_changed.emit()
+	var local_id := get_unique_id()
+	if players.has(local_id):
+		local_player_registered.emit(local_id)
+
+
+func _broadcast_players() -> void:
+	_trace("广播名单 -> %s" % str(players.keys()))
+	players_changed.emit()
+	for peer_id in players.keys():
+		if peer_id == get_unique_id():
+			continue
+		_sync_players.rpc_id(peer_id, players)

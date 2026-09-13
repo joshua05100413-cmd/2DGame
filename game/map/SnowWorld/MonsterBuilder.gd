@@ -2,6 +2,9 @@ extends Node2D
 
 const monster_pre = preload("res://game/monster/Ghoul/Ghoul.tscn")
 
+## 联机时这只怪物的类型键，必须与 SnowWorld 里 CoopWorld 注册的一致。
+const COOP_MONSTER_TYPE := "ghoul"
+
 var land_array :Array[Vector2i]
 var global_array : Array[Vector2]
 var rect:Rect2i
@@ -42,6 +45,15 @@ func start() -> void:
 
 #创建一个怪物
 func createMonster(monster):
+	# 联机：只有房主产生怪物，客户端等 CoopSession 广播生成事件。
+	if Net.is_multiplayer_active():
+		if not Coop.is_host():
+			return
+		var coop_pos = getPosition()
+		if coop_pos == null:
+			return
+		Coop.spawn_monster(COOP_MONSTER_TYPE, coop_pos, level_data[level])
+		return
 	var ins = monster.instantiate()
 	ins.setData(level_data[level])
 	var pos = getPosition()

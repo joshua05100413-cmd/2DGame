@@ -3,6 +3,13 @@ extends Node2D
 @onready var builder = $MonsterBuilder
 @onready var land = $Land
 
+const HERO_SCENE = preload("res://game/hero/Hero.tscn")
+const REMOTE_PLAYER = preload("res://game/net/RemotePlayer.gd")
+const GHOUL_PRE = preload("res://game/monster/Ghoul/Ghoul.tscn")
+
+## 联机时这只怪物的类型键，必须与 CoopWorld 注册的一致。
+const COOP_MONSTER_TYPE := "ghoul"
+
 func _init() -> void:
 	Utils.onGameStart.connect(self.onGameStart)
 
@@ -15,6 +22,19 @@ func _ready() -> void:
 	Utils.gameStart()
 	Utils.crosshairChange(false)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	_setup_coop_world()
+
+
+## 联机：把本关卡的复制容器交给会话层。单机时是空操作。
+func _setup_coop_world() -> void:
+	if not Net.is_multiplayer_active():
+		return
+	var world := CoopWorld.create($PlayerRoot, $MonsterRoot, $CreatePosition.global_position)
+	world.with_players(
+		func() -> Node2D: return HERO_SCENE.instantiate(),
+		func() -> Node2D: return REMOTE_PLAYER.new())
+	world.with_monster(COOP_MONSTER_TYPE, func() -> Node2D: return GHOUL_PRE.instantiate())
+	Coop.attach_world(world)
 
 func onGameStart():
 	$ControlUI.visible = true

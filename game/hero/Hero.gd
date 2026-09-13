@@ -10,6 +10,10 @@ const level_up_effect = preload("res://game/hero/effect/LevelUpEffect.tscn")
 
 var gun = null
 
+## 联机：本机玩家的 peer id，由 CoopSession 在生成时写入。
+## 0 表示单机。
+var peer_id := 0
+
 var SPEED = 100.0
 var is_run = false
 var is_dead = false #是否死亡
@@ -40,6 +44,12 @@ func _ready():
 
 func updateHero():
 	SPEED = 100 * PlayerData.player_speed
+
+
+## 联机：由 CoopSession 告知本节点代表哪个 peer。
+## 只有本机玩家会拿到这个调用；其他玩家用的是 RemotePlayer 代理。
+func mark_as_local_player(id: int) -> void:
+	peer_id = id
 
 func onPlayerLevelChange(level):
 	var ins = level_up_effect.instantiate()
@@ -99,6 +109,8 @@ func _physics_process(delta):
 	if gun:
 		gun.look_at(get_global_mouse_position())
 		setGunLookat(get_global_mouse_position())
+	# 联机：上报本地位置与朝向。单机时 Coop 会直接忽略。
+	Coop.report_local_state(global_position, body.scale.x != 1)
 
 func set_knockback(knockback_speed):
 	self.knockback_speed = knockback_speed

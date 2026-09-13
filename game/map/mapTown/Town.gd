@@ -23,6 +23,11 @@ const gold = preload("res://game/items/Gold.tscn")
 const weapon_choose = preload("res://ui/widgets/WeaponChoose.tscn")
 const monster_pre = preload("res://game/monster/Monster 2/Monster2.tscn")
 const death_borad = preload("res://ui/widgets/DeathBoard.tscn")
+const HERO_SCENE = preload("res://game/hero/Hero.tscn")
+const REMOTE_PLAYER = preload("res://game/net/RemotePlayer.gd")
+
+## 联机时这只怪物的类型键，必须与 CoopWorld 注册的一致。
+const COOP_MONSTER_TYPE := "monster2"
 
 func _ready():
 	LevelServer.monsterCreate.connect(self.monsterCreate)
@@ -33,6 +38,26 @@ func _ready():
 	LevelServer.onNextLevel.connect(self.onNextLevel)
 	Utils.onGameStart.connect(self.onGameStart)
 	PlayerData.onPlayerDeath.connect(self.onPlayerDeath)
+	_setup_coop_world()
+
+
+## 联机：把本关卡的复制容器交给会话层。单机时是空操作。
+func _setup_coop_world() -> void:
+	if not Net.is_multiplayer_active():
+		return
+	var world := CoopWorld.create($TileMap2/PlayerRoot, monster_root, $PositionHome.global_position)
+	# Town.tscn 里已经摆好了一个 Hero 实例，直接把它作为本机玩家复用，
+	# 不必再生成一个（否则会出现两个自己）。
+	var preset := $TileMap2/PlayerRoot/Hero as Node2D
+	world.local_player_node = preset
+	world.with_players(
+		func() -> Node2D: return HERO_SCENE.instantiate(),
+		func() -> Node2D: return REMOTE_PLAYER.new())
+	world.with_monster(COOP_MONSTER_TYPE, func() -> Node2D:
+		var spawn := monster_pre.instantiate()
+		spawn.setDeathCallBack(self.onMonsterDeath)
+		return spawn)
+	Coop.attach_world(world)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if $CanvasLayer/openShop.visible && Input.is_action_just_pressed("e"):
@@ -139,6 +164,12 @@ func onNextLevel(level):
 
 #怪物生成
 func monsterCreate():
+	# 联机：只有房主决定怪物何时、在哪儿生成，客户端等房主广播。
+	# 两端都跑各自的随机数会让怪物位置与数量对不上。
+	if Net.is_multiplayer_active():
+		if Coop.is_host():
+			Coop.spawn_monster(COOP_MONSTER_TYPE, getPoint(), LevelServer.getLevelMonsterData())
+		return
 	var ins = monster_pre.instantiate()
 	ins.global_position = getPoint()
 	ins.setData(LevelServer.getLevelMonsterData())
