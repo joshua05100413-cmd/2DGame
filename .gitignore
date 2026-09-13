@@ -1,2 +1,9 @@
 # Godot 4+ specific ignores
 .godot/
+
+# Writable user:// root used by tools/run_headless.ps1 (shader cache, logs)
+_userdata/
+
+# Crash dumps produced by the local test harness
+*.log
+crash-*.txt
