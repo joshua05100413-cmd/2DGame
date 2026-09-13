@@ -108,8 +108,17 @@ func is_online() -> bool:
 
 
 ## 联机会话是否真正可用（相对单机模式）。
+##
+## 注意必须检查**连接状态**，不能只看 is_ready。
+## is_ready 只表示「peer 已装到 MultiplayerAPI 上」，而 join() 之后握手还没完成、
+## 甚至 host() 之后对端还没接上时它就已经是 true 了。在那段时间里发 RPC 会被
+## 拒绝（"Trying to call an RPC via a multiplayer peer which is not connected"），
+## 连 call_local 的本地执行都不会发生 —— 房主自己的玩家节点就是这样没建出来的。
 func is_multiplayer_active() -> bool:
-	return mode != Mode.OFFLINE and transport != null and transport.is_ready
+	if mode == Mode.OFFLINE or transport == null or not transport.is_ready:
+		return false
+	return transport.state == NetworkTransport.State.HOSTING \
+		or transport.state == NetworkTransport.State.CONNECTED
 
 
 ## 本机 peer id；单机时返回 1，保证调用方总能拿到合法 owner id。

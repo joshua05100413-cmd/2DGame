@@ -273,7 +273,7 @@ func _spawn_player(peer_id: int, spawn_pos: Vector2, player_name: String) -> voi
 
 @rpc("authority", "call_local", "reliable")
 func _despawn_player(peer_id: int) -> void:
-	var node: Node2D = _player_nodes.get(peer_id)
+	var node := _live_node(_player_nodes, peer_id)
 	if node == null:
 		return
 	_player_nodes.erase(peer_id)
@@ -290,20 +290,20 @@ func _clear_spawned_nodes() -> void:
 	for peer_id in _player_nodes.keys():
 		if not _owned_players.has(peer_id):
 			continue
-		var node: Node2D = _player_nodes[peer_id]
+		var node := _live_node(_player_nodes, peer_id)
 		if is_instance_valid(node):
 			node.queue_free()
 	_player_nodes.clear()
 	_owned_players.clear()
 	_player_states.clear()
 	for net_id in _monster_nodes.keys():
-		var monster: Node2D = _monster_nodes[net_id]
+		var monster := _live_node(_monster_nodes, net_id)
 		if is_instance_valid(monster):
 			monster.queue_free()
 	_monster_nodes.clear()
 	_monster_records.clear()
 	for pickup_id in _pickup_nodes.keys():
-		var pickup: Node2D = _pickup_nodes[pickup_id]
+		var pickup := _live_node(_pickup_nodes, pickup_id)
 		if is_instance_valid(pickup):
 			pickup.queue_free()
 	_pickup_nodes.clear()
@@ -396,7 +396,7 @@ func despawn_monster(net_id: int) -> void:
 
 @rpc("authority", "call_local", "reliable")
 func _despawn_monster(net_id: int) -> void:
-	var node: Node2D = _monster_nodes.get(net_id)
+	var node := _live_node(_monster_nodes, net_id)
 	_monster_nodes.erase(net_id)
 	_monster_records.erase(net_id)
 	if node != null and is_instance_valid(node):
@@ -471,7 +471,7 @@ func despawn_pickup(net_id: int) -> void:
 
 @rpc("authority", "call_local", "reliable")
 func _despawn_pickup(net_id: int) -> void:
-	var node: Node2D = _pickup_nodes.get(net_id)
+	var node := _live_node(_pickup_nodes, net_id)
 	_pickup_nodes.erase(net_id)
 	_pickup_records.erase(net_id)
 	if node != null and is_instance_valid(node):
@@ -550,7 +550,7 @@ func _report_monster_damage(net_id: int, amount: float) -> void:
 
 
 func _resolve_monster_damage(net_id: int, amount: float) -> void:
-	var node: Node2D = _monster_nodes.get(net_id)
+	var node := _live_node(_monster_nodes, net_id)
 	if node == null or not is_instance_valid(node):
 		return
 	if node.has_method("apply_network_damage"):
@@ -566,7 +566,7 @@ func broadcast_monster_hp(net_id: int, hp: float) -> void:
 
 @rpc("authority", "call_local", "reliable")
 func _sync_monster_hp(net_id: int, hp: float) -> void:
-	var node: Node2D = _monster_nodes.get(net_id)
+	var node := _live_node(_monster_nodes, net_id)
 	if node == null or not is_instance_valid(node):
 		return
 	if node.has_method("apply_network_damage"):
@@ -754,6 +754,18 @@ func _resync_world(snapshot: Dictionary) -> void:
 
 # --- 玩家节点访问 -------------------------------------------------------------
 
+## 从节点表里安全取一个还活着的节点。
+##
+## 为什么不能直接 `var n: Node2D = dict[key]`：如果那个节点已经被 queue_free，
+## Godot 会在**赋值时**就报 "Trying to assign invalid previously freed instance"，
+## 而且赋值不会发生 —— is_instance_valid 根本来不及检查。必须先经 Variant。
+func _live_node(table: Dictionary, key: Variant) -> Node2D:
+	var candidate: Variant = table.get(key)
+	if candidate == null or not is_instance_valid(candidate):
+		return null
+	return candidate as Node2D
+
+
 ## 本端为 [param peer_id] 创建的玩家节点，没有则返回 null。
 func get_player_node(peer_id: int) -> Node2D:
 	var node: Variant = _player_nodes.get(peer_id)
@@ -820,9 +832,15 @@ func _collect_monster_states() -> Dictionary:
 	var snapshot := {}
 	for raw_id in _monster_nodes.keys():
 		var net_id := int(raw_id)
-		var node: Node2D = _monster_nodes[raw_id]
-		if not is_instance_valid(node):
+		# 必须先用 Variant 接住再验有效性。
+		# 写成 `var node: Node2D = _monster_nodes[raw_id]` 时，如果那个节点已经被
+		# queue_free 释放，**赋值本身**就会报
+		# "Trying to assign invalid previously freed instance"，
+		# 后面的 is_instance_valid 根本没机会执行 —— 实测每秒刷几十条。
+		var candidate: Variant = _monster_nodes[raw_id]
+		if candidate == null or not is_instance_valid(candidate):
 			continue
+		var node: Node2D = candidate
 		snapshot[net_id] = {"p": node.global_position}
 	return snapshot
 
