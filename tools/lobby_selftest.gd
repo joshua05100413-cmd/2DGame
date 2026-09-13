@@ -196,6 +196,151 @@ func _verify_layout() -> void:
 		_check(close_button.is_visible_in_tree(), "「返回」按钮应当在可见树上")
 
 
+## 两列必须真的装得进内容区。
+##
+## 这条断言是补上一个真实踩到的盲区：左列的 _backend_hint 和右列的 _status_label
+## 各自带着 custom_minimum_size.x = LOBBY_WIDTH - 16 = 364px（单列时代的残留），
+## 而两列容器只有 360px 可用。HBoxContainer 不会压缩子节点的最小宽度，于是右列
+## 从 x=364 开始、整体被推到面板外面 —— 状态栏只剩几个像素露在边缘。
+##
+## 而当时「面板在屏幕内」和「返回按钮在屏幕内」两条断言**全部通过**：面板和返回
+## 按钮确实好好地在屏幕上，坏掉的只是面板内部的列。所以必须单独量列。
+func _verify_columns_fit() -> void:
+	var panel := _lobby.get("_panel") as Panel
+	if panel == null:
+		return
+	var columns := panel.get_node_or_null("Body") as HBoxContainer
+	if columns == null:
+		_check(false, "面板里应当有名为 Body 的两列容器")
+		return
+
+	var box := Rect2(columns.global_position, columns.size)
+	_say("[lobby] 内容区 %s" % str(box))
+	_check(box.size.x > 0.0 and box.size.y > 0.0, "内容区必须有非零尺寸，实际 " + str(box.size))
+
+	for child in columns.get_children():
+		var column := child as Control
+		if column == null:
+			continue
+		var rect := Rect2(column.global_position, column.size)
+		_say("[lobby] 列「%s」 %s  最小宽度 %.1f" % [
+			column.name, str(rect), column.get_combined_minimum_size().x])
+		_check(rect.end.x <= box.end.x + 0.5,
+			"列「%s」不应当超出内容区右边缘（超出的部分会被面板切掉）。列 %s，内容区 %s" % [
+				column.name, str(rect), str(box)])
+		_check(column.size.x > 0.0, "列「%s」必须有非零宽度，实际 %s" % [column.name, str(column.size)])
+
+		# 把左列每一行的最小高度打出来。
+		# 这块 410x230 的画布上纵向预算只有 200px 左右，行高必须心里有数；
+		# 之前两次返工都是因为「我以为某一行是 N 像素」。
+		if column.name == "Left":
+			var total := 0.0
+			for row in column.get_children():
+				var row_control := row as Control
+				if row_control == null:
+					continue
+				var row_height := row_control.get_combined_minimum_size().y
+				total += row_height
+				var row_label := str(row_control.name)
+				if row_label.is_empty():
+					row_label = row_control.get_class()
+				_say("[lobby]   左列行 %-14s 最小高 %.1f" % [row_label, row_height])
+			_say("[lobby]   左列行高合计 %.1f（内容区实际高度 %.1f）" % [total, box.size.y])
+
+
+## 状态栏必须真的看得见。
+##
+## 它是这块画布上最重要的文字：房主的 IP / 64 位 SteamID 都写在这里，要靠它念给
+## 队友。曾经它被推到面板外面，玩家完全看不到，界面却没有任何报错。
+func _verify_status_visible() -> void:
+	var panel := _lobby.get("_panel") as Panel
+	var status := _lobby.get("_status_label") as Label
+	if panel == null or status == null:
+		_check(false, "应当有面板和状态栏")
+		return
+
+	var status_rect := Rect2(status.global_position, status.size)
+	var panel_rect := Rect2(panel.global_position, panel.size)
+	var screen := Rect2(Vector2.ZERO, _lobby.get_viewport_rect().size)
+	_say("[lobby] 状态栏 %s  面板 %s" % [str(status_rect), str(panel_rect)])
+
+	_check(status.size.x > 0.0 and status.size.y > 0.0,
+		"状态栏必须有非零尺寸，实际 " + str(status.size))
+	_check(panel_rect.encloses(status_rect),
+		"状态栏必须完整落在面板内。状态栏 %s，面板 %s" % [str(status_rect), str(panel_rect)])
+	_check(screen.encloses(status_rect),
+		"状态栏必须完整落在屏幕内。状态栏 %s，屏幕 %s" % [str(status_rect), str(screen)])
+
+	# 只判「在屏幕内」还不够：宽度小到只剩十几个像素时它照样在屏幕内，
+	# 但一个字都读不出来。状态栏现在横跨整幅面板，宽度应当接近面板内宽。
+	var expected_width := panel_rect.size.x - 12.0
+	_check(status.size.x >= expected_width - 1.0,
+		"状态栏应当横跨整幅面板（约 %.0f px），实际 %.1f" % [expected_width, status.size.x])
+	# 它必须位于两列内容区**下方**，不能和列重叠。
+	var columns := panel.get_node_or_null("Body") as HBoxContainer
+	if columns != null:
+		_check(status.global_position.y >= columns.global_position.y + columns.size.y - 1.0,
+			"状态栏应当在两列内容区下方。状态栏 y=%.1f，内容区底部 y=%.1f" % [
+				status.global_position.y, columns.global_position.y + columns.size.y])
+
+
+## 地址输入框必须真的放得下房主要报的东西。
+##
+## 这条是补上一个纯功能性的盲区：布局「没错」，但输入框只有 36px 宽 ——
+## 17 位 SteamID（约 80px）在里面只能看到四五个字符，房主没法核对、加入方没法
+## 输入。这类问题不会让任何断言变红，只会让人用不了。
+func _verify_address_field_usable() -> void:
+	var address := _lobby.get("_address_edit") as LineEdit
+	if address == null:
+		_check(false, "应当有地址输入框")
+		return
+
+	var width := address.size.x
+	_say("[lobby] 地址输入框宽度 %.1f" % width)
+	# 17 位 SteamID 在 font 8 下约 80px；再留一点光标余量。
+	_check(width >= 90.0,
+		"地址输入框应当放得下 17 位 SteamID（至少 90px），实际 %.1f" % width)
+	_check(address.is_visible_in_tree(), "地址输入框应当在可见树上")
+
+
+## Steam 后端下端口输入框应当隐藏。
+##
+## Steam P2P 的 virtual port 是两端约定的固定值，不由玩家填。留着一个没用的
+## 输入框既让人困惑，又白占 58px —— 那 58px 正是地址输入框需要的。
+func _verify_port_field_per_backend() -> void:
+	var port_edit := _lobby.get("_port_edit") as LineEdit
+	var address := _lobby.get("_address_edit") as LineEdit
+	if port_edit == null or address == null:
+		_check(false, "应当有端口和地址输入框")
+		return
+
+	var option := _lobby.get("_backend_option") as OptionButton
+	if option == null:
+		return
+
+	# 切到 Steam：端口应当隐藏，地址输入框应当变宽。
+	var steam_index := -1
+	for i in option.item_count:
+		if option.get_item_text(i).begins_with("Steam"):
+			steam_index = i
+	if steam_index < 0:
+		_say("[lobby] 下拉框里没有 Steam 项，跳过端口显隐检查")
+		return
+
+	option.selected = steam_index
+	_lobby.call("_on_backend_selected", steam_index)
+	var steam_width := address.size.x
+	_check(not port_edit.visible, "选中 Steam P2P 时端口输入框应当隐藏")
+	_say("[lobby] Steam 模式下地址输入框宽度 %.1f" % steam_width)
+	_check(steam_width >= 90.0,
+		"Steam 模式下地址输入框应当能放下 SteamID。实际 %.1f" % steam_width)
+
+	# 切回 ENet：端口应当回来。
+	option.selected = 0
+	_lobby.call("_on_backend_selected", 0)
+	_check(port_edit.visible, "选中 ENet 时端口输入框应当恢复显示")
+
+
 # --- 开房 / 断开 ---------------------------------------------------------------
 
 func _tick_host() -> void:
@@ -232,6 +377,16 @@ func _tick_host() -> void:
 		var screen := Rect2(Vector2.ZERO, _lobby.get_viewport_rect().size)
 		_check(screen.encloses(panel_rect),
 			"开房后（状态栏变长）面板仍应完整位于屏幕内。面板 %s，屏幕 %s" % [str(panel_rect), str(screen)])
+
+	# 几何检查必须放在这里，不能放到 _verify_built()。
+	#
+	# Container 的尺寸是在 NOTIFICATION_SORT_CHILDREN 里算的，构建当帧还没排过版，
+	# 子节点量出来全是 0x0 —— 那样断言会以「尺寸为 0」的形式误报，而不是报出真正
+	# 的问题。等几帧之后再量才是真实布局。
+	_verify_columns_fit()
+	_verify_status_visible()
+	_verify_address_field_usable()
+	_verify_port_field_per_backend()
 
 	var host_button := _lobby.get("_host_button") as Button
 	var leave_button := _lobby.get("_leave_button") as Button

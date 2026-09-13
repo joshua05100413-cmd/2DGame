@@ -19,7 +19,27 @@ const LOBBY_HEIGHT := 212.0
 ## 面板内边距。
 const PANEL_MARGIN := 6.0
 ## 底部「返回」按钮占用的一条，独立于内容流，永远不会被内容挤走。
-const FOOTER_HEIGHT := 20.0
+##
+## 26 是紧凑按钮**实测**的最小高度，不是估的 —— 曾经这里写 20，而按钮实际要 26，
+## 于是「返回」比面板底部多伸出 3px、正好顶到屏幕边缘。凡是和控件真实尺寸有关的
+## 数字，都先量再说。
+const FOOTER_HEIGHT := 26.0
+## 状态栏占用的一条，横跨整幅面板，同样独立于内容流。
+##
+## 为什么让状态栏独占一整行，而不是塞进右列：
+## 它是这块 410x230 画布上最需要**读清楚**的文字 —— 房主的 IP、64 位 SteamID
+## 都写在这里，玩家要照着它念给队友。放进两列之一的话，宽度只剩 110 上下：
+## SteamID 会被折成两行，而本字体一行就是 21px，两行 42px 会直接吃掉右列。
+## 独占一行同时也解开了「状态栏宽度」和「两列怎么分」之间的耦合 ——
+## 之前那个把右列整个挤出面板的 bug，就是这个耦合造成的。
+const STATUS_HEIGHT := 22.0
+## 内容区与底部两条之间的间距。
+const ROW_GAP := 4.0
+## 右列（房间成员）的固定宽度。左列拿剩下的全部宽度给输入框。
+const RIGHT_COLUMN_WIDTH := 120.0
+## 左列里「传输后端 / 昵称 / 地址」这些标签的固定宽度。
+## 84 太宽了 —— 挤掉的全是输入框的宽度，而输入框里要放得下 17 位 SteamID。
+const FIELD_LABEL_WIDTH := 56.0
 
 var _panel: Panel = null
 var _backend_option: OptionButton = null
@@ -181,6 +201,10 @@ func _on_backend_selected(index: int) -> void:
 	# Steam 走 64 位 SteamID，ENet 走 IP，提示语不同。
 	var backend := selected_backend()
 	_address_edit.placeholder_text = _address_placeholder(backend)
+	# Steam P2P 没有端口概念（virtual port 是两端约定的固定值，不由玩家填）。
+	# 藏掉它有两个好处：不再让玩家以为要填端口；容器下一帧重排时，让出的宽度
+	# 会回到地址输入框 —— 17 位 SteamID 要 80px 上下才看得全。
+	_port_edit.visible = backend != TransportFactory.Backend.STEAM
 	_prepare_selected_backend(backend)
 
 
@@ -332,18 +356,28 @@ func _build() -> void:
 
 	_panel = Panel.new()
 	_panel.name = "Panel"
-	# 先定尺寸，再按尺寸居中。
-	# 顺序很重要：PRESET_CENTER 的 offsets 依赖控件已有的尺寸，
-	# 先居中再设 size 会让面板偏到一边。
 	_panel.size = Vector2(LOBBY_WIDTH, LOBBY_HEIGHT)
 	_panel.custom_minimum_size = Vector2(LOBBY_WIDTH, LOBBY_HEIGHT)
-	_panel.set_anchors_preset(Control.PRESET_CENTER)
-	_panel.position = Vector2(-LOBBY_WIDTH * 0.5, -LOBBY_HEIGHT * 0.5)
+	# 用 TOP_LEFT anchors + 自己算居中位置，**不要**用 PRESET_CENTER。
+	#
+	# PRESET_CENTER 会把 anchors 设成 0.5，而 Control.position 在那种情况下是
+	# 「相对锚点的偏移」—— 它的真实屏幕位置还取决于父节点当时的尺寸。_build() 在
+	# _ready() 里跑，那时父节点尺寸还没定，结果面板被放到 global_position
+	# (-190,-112)，整个跑到屏幕左上角外面去。用 TOP_LEFT 之后 position 就是
+	# 屏幕坐标本身，与父节点尺寸无关，可预测。
+	_panel.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_panel.position = _centered_panel_position(_panel.size)
 	add_child(_panel)
 
 	# 这个 viewport 只有 410x230。单列堆十个控件实测需要 240px 而可用只有 180px，
 	# 底部的按钮必然被顶出屏幕，所以改成左右两列。
-	var body_height := LOBBY_HEIGHT - PANEL_MARGIN * 2.0 - FOOTER_HEIGHT
+	#
+	# 纵向预算：面板高 212，减上下内边距各 6 → 200。
+	# 底部两条固定高度，两列拿剩下的；不够高的话最后由 _fit_panel_to_content()
+	# 按内容真实需要的高度加高，所以这里的数字只是设计基准，不必精确。
+	var footer_top := LOBBY_HEIGHT - FOOTER_HEIGHT - PANEL_MARGIN * 0.5
+	var status_top := footer_top - STATUS_HEIGHT
+	var body_height := status_top - PANEL_MARGIN
 	var columns := HBoxContainer.new()
 	columns.name = "Body"
 	columns.position = Vector2(PANEL_MARGIN, PANEL_MARGIN)
@@ -351,30 +385,40 @@ func _build() -> void:
 	columns.add_theme_constant_override("separation", 8)
 	_panel.add_child(columns)
 
-	# 左列：连接参数与操作。
+	# 左列：连接参数与操作。它装着所有输入框，需要宽度 —— 让它吃掉剩余空间。
+	#
+	# 两列**都**标 SIZE_EXPAND_FILL 试过，实测额外宽度全被右列拿走了（左列停在
+	# 自己的最小宽度 184，地址输入框只剩 36px，连 17 位 SteamID 都显示不下）。
+	# 与其去猜容器的分配规则，不如明确指定：右列内容短（成员名），给固定宽度。
 	var root_box := VBoxContainer.new()
 	root_box.name = "Left"
 	root_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	root_box.add_theme_constant_override("separation", 2)
 	columns.add_child(root_box)
 
-	# 右列：状态与房间成员。成员列表可以长，给它纵向伸展。
+	# 右列：房间成员。宽度固定，够放「房间成员（N）」和名字即可。
 	var right_box := VBoxContainer.new()
 	right_box.name = "Right"
-	right_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right_box.size_flags_horizontal = Control.SIZE_FILL
+	right_box.custom_minimum_size = Vector2(RIGHT_COLUMN_WIDTH, 0)
 	right_box.add_theme_constant_override("separation", 2)
 	columns.add_child(right_box)
 
-	var title := Label.new()
-	title.text = "联机合作生存"
-	title.add_theme_font_size_override("font_size", 10)
-	root_box.add_child(title)
+	# 这里原本有一个 font_size = 10 的「联机合作生存」标题，占 30px 高。
+	#
+	# 删掉它是有意的：项目这套字体在 410x230 的逻辑画布上，一个 Label 的最小高度
+	# 实测是字号的 **3 倍**（font 7 → 21px，font 10 → 30px），所以一个纯装饰的标题
+	# 就要吃掉 13% 的纵向预算，而面板总高只有 230。省下来的 30px 让面板从
+	# 「上下各剩 3px、按钮贴着屏幕边缘」回到正常留白。
+	#
+	# 面板的用途并不需要标题：玩家刚点了主菜单的「联机」，里面是传输后端 / 昵称 /
+	# 地址 / 开房 / 加入 / 断开 / 返回，不可能认错；状态栏也在持续说明下一步做什么。
 
 	# 后端选择
 	var backend_row := HBoxContainer.new()
 	backend_row.add_theme_constant_override("separation", 6)
 	root_box.add_child(backend_row)
-	backend_row.add_child(_make_label("传输后端", 84))
+	backend_row.add_child(_make_label("传输后端", FIELD_LABEL_WIDTH))
 	_backend_option = OptionButton.new()
 	_backend_option.add_theme_font_size_override("font_size", 8)
 	_backend_option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -384,14 +428,19 @@ func _build() -> void:
 	_backend_hint = Label.new()
 	_backend_hint.add_theme_font_size_override("font_size", 7)
 	_backend_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_backend_hint.custom_minimum_size = Vector2(LOBBY_WIDTH - 16, 20)
+	# 只卡高度，宽度交给容器。
+	# 这里曾经写的是 Vector2(LOBBY_WIDTH - 16, 20)，那是单列时代的残留：
+	# 当时这一行独占整幅面板，写死 364px 是对的；改成两列之后它变成了左列的
+	# **最小宽度**，而右列的状态栏也写着同样的 364px —— 两列合计 728px 要塞进
+	# 360px 的容器，右列整体被推出面板，状态栏只剩几个像素露在外面。
+	_backend_hint.custom_minimum_size = Vector2(0, 20)
 	root_box.add_child(_backend_hint)
 
 	# 昵称
 	var name_row := HBoxContainer.new()
 	name_row.add_theme_constant_override("separation", 6)
 	root_box.add_child(name_row)
-	name_row.add_child(_make_label("昵称", 84))
+	name_row.add_child(_make_label("昵称", FIELD_LABEL_WIDTH))
 	_name_edit = LineEdit.new()
 	_name_edit.text = _default_name()
 	_name_edit.max_length = NetManager.MAX_NAME_LENGTH
@@ -403,7 +452,7 @@ func _build() -> void:
 	var addr_row := HBoxContainer.new()
 	addr_row.add_theme_constant_override("separation", 6)
 	root_box.add_child(addr_row)
-	addr_row.add_child(_make_label("地址", 84))
+	addr_row.add_child(_make_label("地址", FIELD_LABEL_WIDTH))
 	_address_edit = LineEdit.new()
 	_address_edit.text = "127.0.0.1"
 	_address_edit.placeholder_text = "127.0.0.1"
@@ -427,13 +476,18 @@ func _build() -> void:
 	button_row.add_child(_join_button)
 	button_row.add_child(_leave_button)
 
-	# 状态
+	# 状态栏：横跨整幅面板的独立一行，不参与上面的两列布局。
+	#
+	# 同样注意 position/size 必须在 add_child **之后**设置 —— 入树时 Godot 会按
+	# anchors/offsets 重算控件矩形，先设的值会被扔掉。
 	_status_label = Label.new()
 	_status_label.add_theme_font_size_override("font_size", 7)
 	_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	_status_label.custom_minimum_size = Vector2(LOBBY_WIDTH - 16, 18)
+	_status_label.vertical_alignment = VERTICAL_ALIGNMENT_TOP
 	_status_label.text = ""
-	right_box.add_child(_status_label)
+	_panel.add_child(_status_label)
+	_status_label.position = Vector2(PANEL_MARGIN, status_top)
+	_status_label.size = Vector2(LOBBY_WIDTH - PANEL_MARGIN * 2.0, STATUS_HEIGHT)
 
 	# 房间成员
 	_player_title = Label.new()
@@ -458,8 +512,63 @@ func _build() -> void:
 	# anchors/offsets 重算控件矩形，先设的值会被扔掉（实测 size 会从 20 变 40）。
 	var close_button := _make_button("返回", _on_close_pressed)
 	_panel.add_child(close_button)
-	close_button.position = Vector2(PANEL_MARGIN, LOBBY_HEIGHT - FOOTER_HEIGHT - PANEL_MARGIN * 0.5)
+	close_button.position = Vector2(PANEL_MARGIN, footer_top)
 	close_button.size = Vector2(LOBBY_WIDTH - PANEL_MARGIN * 2.0, FOOTER_HEIGHT)
+
+	_fit_panel_to_content(columns, close_button)
+
+
+## 按内容的真实最小高度把面板加高，然后重新摆放两列、状态栏和底部按钮。
+##
+## 为什么不手算纵向预算（这条踩过两次）：
+##   第一次给两列预留 157px，而左列实际需要 165px —— Container **不会**被压到
+##   自己的最小高度以下，于是它长到 165，和状态栏重叠 8px；
+##   第二次把 FOOTER_HEIGHT 写成 20，而紧凑按钮实测最小高度是 26，于是「返回」
+##   比面板底部多伸出 3px。
+##   两次都是同一个毛病：**手写的数字和真实布局对不上**。所以这里一律问控件要。
+func _fit_panel_to_content(columns: HBoxContainer, close_button: Button) -> void:
+	# 控件自报的最小高度可能比常量还大（字号、样式都是变量），取两者的大者。
+	var footer_height := maxf(close_button.get_combined_minimum_size().y, FOOTER_HEIGHT)
+	var status_height := maxf(_status_label.get_combined_minimum_size().y, STATUS_HEIGHT)
+	var body_height := columns.get_combined_minimum_size().y
+
+	var needed := PANEL_MARGIN * 2.0 + body_height + status_height + footer_height + ROW_GAP * 2.0
+	# 不低于设计尺寸（太扁不好看），也不高于屏幕（viewport 逻辑高度只有 230）。
+	needed = clampf(needed, LOBBY_HEIGHT, 230.0)
+
+	_panel.size.y = needed
+	_panel.custom_minimum_size.y = needed
+	# anchors 是 TOP_LEFT，改完高度必须重新居中。
+	_panel.position = _centered_panel_position(_panel.size)
+
+	# 上下内边距对称，底部不再被按钮顶出去。
+	var footer_top := _panel.size.y - PANEL_MARGIN - footer_height
+	var status_top := footer_top - ROW_GAP - status_height
+	var inner_width := LOBBY_WIDTH - PANEL_MARGIN * 2.0
+	var columns_height := status_top - ROW_GAP - PANEL_MARGIN
+
+	columns.position = Vector2(PANEL_MARGIN, PANEL_MARGIN)
+	columns.size = Vector2(inner_width, columns_height)
+	_status_label.position = Vector2(PANEL_MARGIN, status_top)
+	_status_label.size = Vector2(inner_width, status_height)
+	close_button.position = Vector2(PANEL_MARGIN, footer_top)
+	close_button.size = Vector2(inner_width, footer_height)
+
+	_say_layout(needed, body_height, status_height, footer_height, columns_height)
+
+
+## 把最终几何写进日志。
+##
+## 这块画布的纵向预算是硬约束，出问题时「哪一条多高」比「哪里错了」更有用；
+## 前面两次返工都是靠这类数字才定位到的。
+func _say_layout(panel_height: float, body: float, status: float, footer: float, columns_height: float) -> void:
+	print("[lobby] 面板高 %.0f（两列 %.0f / 状态 %.0f / 返回 %.0f / 内容区 %.0f）" % [
+		panel_height, body, status, footer, columns_height])
+
+
+## 把面板摆到屏幕正中。TOP_LEFT anchors 下 position 就是屏幕坐标。
+func _centered_panel_position(panel_size: Vector2) -> Vector2:
+	return ((get_viewport_rect().size - panel_size) * 0.5).floor()
 
 
 func _make_label(text: String, width: float) -> Label:

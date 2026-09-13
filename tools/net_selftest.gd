@@ -7,8 +7,9 @@ const REPORT_PATH := REPORT_DIR + "/net_selftest.log"
 ## 网络传输层无头自测（真 ENet 回环，不是 mock）。
 ##
 ## 验证目标
-##   1. 后端探测：ENet 永远可用；Steam 在没装扩展时必须优雅报告不可用，
-##      而不是崩溃、也不是静默成功。
+##   1. 后端探测：ENet 永远可用；Steam 的可用性随环境变化（装了扩展且 Steam 在
+##      运行就可用），两种情况下都必须自洽 —— 要么真的造出 SteamTransport，
+##      要么优雅报告不可用，绝不崩溃、也绝不静默成功。
 ##   2. 真 ENet 握手：本进程内同时起「房主」和「客户端」两个 MultiplayerAPI，
 ##      通过 127.0.0.1 UDP 真实收发。
 ##   3. 名单 RPC 双向同步：客户端报到 -> 房主广播 -> 双方名单一致。
@@ -80,25 +81,39 @@ func _static_checks() -> void:
 	_check(enet is ENetTransport, "TransportFactory 应当为 ENet 造出 ENetTransport")
 	_check(enet.backend_name == "ENet", "ENet 后端名应为 ENet，实际 " + str(enet.backend_name))
 
-	# Steam 扩展已被 .gdignore 隔离，这里必须走「优雅不可用」分支。
+	# Steam 后端的可用性随环境变化，不能写死。
+	#
+	# 这组断言原来假设「扩展永远不可用」（当时仓库里那份是给 Godot 4.2 编译的，
+	# 一直用 .gdignore 隔离着）。现在扩展是可选的：装了 `tools/setup_steam.bat`
+	# 并且 Steam 在运行时，后端就是**可用**的 —— 那时「必须返回不可用原因」这类
+	# 断言会以「功能正常工作」的形式失败。所以按真实可用性分两支，
+	# 判据和 steam_selftest 保持一致。
 	var steam_reason: String = TransportFactory.unavailable_reason(TransportFactory.Backend.STEAM)
-	_say("[net] Steam 后端状态: " + ("可用" if steam_reason.is_empty() else steam_reason))
-	_check(not steam_reason.is_empty(),
-		"未安装 GodotSteam 扩展时，Steam 后端应当报告不可用原因")
+	var steam_available := steam_reason.is_empty()
+	_say("[net] Steam 后端状态: " + ("可用" if steam_available else steam_reason))
+
 	var steam: NetworkTransport = TransportFactory.create(TransportFactory.Backend.STEAM)
-	_check(steam == null,
-		"Steam 扩展缺失时 TransportFactory.create(STEAM) 应当返回 null 而不是崩溃")
+	if steam_available:
+		# 可用：工厂必须真的造出 SteamTransport，而不是返回 null。
+		_say("[net] 本机 Steam 后端可用，走「正常可用」分支")
+		_check(steam is SteamTransport,
+			"Steam 可用时 TransportFactory 应当造出 SteamTransport，实际 " + str(steam))
+		_check(TransportFactory.is_available(TransportFactory.Backend.STEAM),
+			"Steam 可用时 is_available() 必须为 true")
+	else:
+		_check(steam == null,
+			"Steam 不可用时 TransportFactory.create(STEAM) 应当返回 null 而不是崩溃")
 
-	# 不可用的后端被直接使用时，必须返回错误码并进入 FAILED，而不是静默成功。
-	var probe := SteamTransport.new()
-	var err: int = probe.host(4, 0)
-	_check(err != OK, "Steam 后端不可用时 host() 必须返回错误码")
-	_check(probe.state == NetworkTransport.State.FAILED,
-		"Steam 后端不可用时状态应为 FAILED，实际 " + str(probe.state))
-	_check(not probe.last_error.is_empty(), "失败时必须给出可展示给玩家的原因")
+		# 不可用的后端被直接使用时，必须返回错误码并进入 FAILED，而不是静默成功。
+		var probe := SteamTransport.new()
+		var err: int = probe.host(4, 0)
+		_check(err != OK, "Steam 后端不可用时 host() 必须返回错误码")
+		_check(probe.state == NetworkTransport.State.FAILED,
+			"Steam 后端不可用时状态应为 FAILED，实际 " + str(probe.state))
+		_check(not probe.last_error.is_empty(), "失败时必须给出可展示给玩家的原因")
 
-	var join_err: int = probe.join("76561198000000000", 0)
-	_check(join_err != OK, "Steam 后端不可用时 join() 也必须返回错误码")
+		var join_err: int = probe.join("76561198000000000", 0)
+		_check(join_err != OK, "Steam 后端不可用时 join() 也必须返回错误码")
 
 	# 基类契约默认值（保证子类接口完整）。
 	var base := NetworkTransport.new()

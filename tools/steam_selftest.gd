@@ -6,13 +6,13 @@ const REPORT_DIR := "res://_userdata/reports"
 const REPORT_PATH := REPORT_DIR + "/steam_selftest.log"
 ## Steam P2P 后端的无头自测。
 ##
-## 本机没有（也不能有）GodotSteam GDExtension：仓库自带的那份是为更老的 Godot
-## 编译的，加载它会直接让 Godot 4.4 段错误，所以它已被 addons/godotsteam/.gdignore
-## 隔离。因此这里分两层验证：
+## 扩展是可选的（`tools/setup_steam.bat` 安装，不进仓库，见 .gitignore），
+## 所以本机可能装也可能没装。因此这里分三层验证：
 ##
-##   A. 优雅降级（真实环境，无替身）
-##      扩展缺失时后端必须报告不可用、返回错误码、给出可读原因，
-##      而不是崩溃、静默成功或抛异常。
+##   A. 优雅降级 / 真实探测（真实环境，无替身）
+##      后端不可用时必须报告原因、返回错误码、给出可读原因，而不是崩溃或静默成功；
+##      装好扩展时则记录真实探测结果，并交叉核对真实方法表的参数个数。
+##      另有几条**无条件**断言守着「未初始化就去调 Steam API」这个崩溃（见下）。
 ##
 ##   B. 协议逻辑（注入替身，真实网络回环）
 ##      SteamTransport 支持注入「Steam 单例」「peer 工厂」「GDExtension 调用代理」。
