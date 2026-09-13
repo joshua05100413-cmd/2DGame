@@ -313,6 +313,24 @@ func join(address: String, _port: int) -> int:
 		return ERR_UNAVAILABLE
 	_init_relay()
 
+	# 连自己这件事必须当场挡下来。
+	#
+	# 同一台电脑双开时两个实例共用一个 Steam 客户端会话，getSteamID() 返回同一个
+	# 值 —— 于是「加入」那一端其实在连它自己，而 SteamNetworkingSockets 不允许
+	# 自己连自己。不拦的话会白等满 20 秒，然后报一句「超时，请确认对方已开房」，
+	# 把真正的原因（根本不存在第二个账号）盖掉。实测踩过：两端都是自己的
+	# SteamID，房主端一切正常，加入端一直超时，而超时信息把人往「对方没开房」
+	# 的方向引。
+	var self_id := local_steam_id()
+	if self_id != 0 and steam_id == self_id:
+		# 纯文本：这行会原样显示在大厅的状态栏里，Label 不渲染 markdown。
+		last_error = "不能连接到自己：%d 就是本机登录的 Steam 账号。" % steam_id
+		last_error += "Steam 联机需要两个不同的账号、各一台机器 —— "
+		last_error += "同一台电脑双开共用同一个 SteamID，Steam 不允许自己连自己。"
+		last_error += "一台电脑自测请改用 ENet 后端。"
+		_set_state(State.FAILED)
+		return ERR_INVALID_PARAMETER
+
 	var peer := _create_peer()
 	if peer == null:
 		last_error = "无法创建 %s 实例。" % STEAM_PEER_CLASS
@@ -404,7 +422,7 @@ func poll() -> void:
 				if _connect_timer <= 0.0:
 					last_error = "Steam 连接超时（%.0f 秒）。中继：%s。" % [
 						connect_timeout_sec, relay_status_text()]
-					last_error += "请确认对方已经点了「开房」、SteamID 是对方**开房后状态栏显示的那串数字**，双方 Steam 都在线。"
+					last_error += "请确认对方已经点了「开房」、SteamID 是对方开房后状态栏显示的那串数字，双方 Steam 都在线。"
 					close()
 					_set_state(State.FAILED)
 		MultiplayerPeer.CONNECTION_CONNECTED:

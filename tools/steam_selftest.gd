@@ -244,6 +244,37 @@ func _verify_against_real_signature(host_call: Dictionary, client_call: Dictiona
 			expected.get("create_client", -1), client_call.get("args", []).size()])
 
 
+## 连自己必须被当场挡下。
+##
+## 真机踩过的坑：同一台电脑双开时两个实例共用一个 Steam 客户端会话，SteamID
+## 完全相同。加入端于是去连它自己，Steam 拒绝，白等 20 秒后报「超时，请确认对方
+## 已开房」—— 把「根本不存在第二个账号」这个真正的原因盖掉了。
+##
+## 这条只在**本机 Steam 真的可用**时才有意义（需要真实的 local_steam_id()），
+## 所以没装扩展的环境直接跳过，CI 不受影响。
+func _verify_self_connect_guard() -> void:
+	if not SteamTransport.is_available():
+		_say("[steam] 本机 Steam 不可用，跳过自连拦截检查")
+		return
+	var reason := SteamTransport.ensure_steam_ready()
+	if not reason.is_empty():
+		_say("[steam] Steam 未就绪（%s），跳过自连拦截检查" % reason)
+		return
+	var self_id := SteamTransport.local_steam_id()
+	if self_id == 0:
+		_say("[steam] 读不到本机 SteamID，跳过自连拦截检查")
+		return
+
+	var probe := SteamTransport.new()
+	var err: int = probe.join(str(self_id), PORT)
+	_check(err != OK, "连接自己的 SteamID 必须当场失败，而不是等超时")
+	_check(probe.last_error.contains("自己"),
+		"自连失败原因应当点明「连到自己」，实际：" + probe.last_error)
+	_check(probe.state == NetworkTransport.State.FAILED,
+		"自连被拒后状态应为 FAILED，实际 " + str(probe.state))
+	_say("[steam] 自连拦截：%s" % probe.last_error)
+
+
 func _make_steam_transport(api: MultiplayerAPI, role: String, port: int) -> SteamTransport:
 	var transport := SteamTransport.new()
 	transport.set_multiplayer_api(api)
@@ -363,6 +394,7 @@ func _tick_invalid() -> void:
 	_check(err == ERR_INVALID_PARAMETER,
 		"非法 SteamID 应当返回 ERR_INVALID_PARAMETER，实际 " + str(err))
 	_check(not probe.last_error.is_empty(), "非法 SteamID 应当给出可读原因")
+	_verify_self_connect_guard()
 
 	# 断开后应当干净复位。
 	_host_net.call("stop")
