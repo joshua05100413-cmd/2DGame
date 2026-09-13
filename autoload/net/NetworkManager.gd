@@ -75,6 +75,13 @@ func _trace(message: String) -> void:
 func _ready() -> void:
 	# 跨场景存活：联机会话必须能挺过地图切换。
 	process_mode = Node.PROCESS_MODE_ALWAYS
+	# 跑游戏时加 `-- --net-verbose` 就会打印每一次网络事件。
+	# 真实双进程下的联机问题（看不到队友、状态不同步）靠这个日志定位，
+	# 单进程测试覆盖不到进程间差异。
+	for arg in OS.get_cmdline_user_args():
+		if arg == "--net-verbose":
+			verbose = true
+			print("[Net] 网络日志已开启")
 	local_player_name = default_player_name()
 
 

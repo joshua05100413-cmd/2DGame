@@ -85,13 +85,16 @@ func apply_network_damage(amount: float) -> void:
 	onHit(amount, true, true)
 
 func _physics_process(delta):
+	# 伤害数字所有端都要显示，**包括客户端上的影子**，所以必须放在影子分支之前。
+	# 曾经把它放在后面，影子直接 return 掉了，于是联机时打怪没有伤害数字
+	# （但伤害是生效的 —— 怪照样会死、照样掉金币，只是玩家看不到反馈）。
+	if idle_frame_num > 0:
+		Utils.showHitLabel(idle_frame_num,self)
+		idle_frame_num = 0
 	# 影子：不跑 AI，只跟随房主同步过来的位置。
 	if not is_authoritative:
 		_update_shadow(delta)
 		return
-	if idle_frame_num > 0:
-		Utils.showHitLabel(idle_frame_num,self)
-		idle_frame_num = 0
 	#if Engine.get_physics_frames() % 60 :
 	if is_atk || is_die:
 		return

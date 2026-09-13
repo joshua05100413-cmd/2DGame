@@ -272,6 +272,23 @@ func _verify_host_players() -> void:
 	if other != null:
 		_check(_script_path(other).ends_with("RemotePlayer.gd"),
 			"房主端客户端的节点应当是 RemotePlayer 代理，实际 " + _script_path(other))
+		# 节点存在 ≠ 看得见。这里踩过 LobbyUI 的坑（26 项全绿但界面隐形），
+		# 所以远端代理必须验证到精灵这一层。
+		_check(other.visible and other.is_visible_in_tree(),
+			"远端玩家代理应当可见")
+		var proxy_sprite := other.find_child("AnimatedSprite2D", true, false) as AnimatedSprite2D
+		_check(proxy_sprite != null, "远端玩家代理应当有 AnimatedSprite2D")
+		if proxy_sprite != null:
+			_check(proxy_sprite.visible and proxy_sprite.is_visible_in_tree(),
+				"代理的精灵应当可见")
+			_check(proxy_sprite.sprite_frames != null,
+				"代理的 SpriteFrames 不能为空 —— 否则角色完全画不出来")
+			if proxy_sprite.sprite_frames != null:
+				_check(proxy_sprite.sprite_frames.has_animation("idle"),
+					"代理的 SpriteFrames 应当包含 idle 动画")
+				_say("[gcoop] 代理动画=%s 帧数=%d" % [
+					str(proxy_sprite.animation),
+					proxy_sprite.sprite_frames.get_frame_count("idle")])
 
 	# 客户端视角
 	_check(int(_client_coop.call("get_player_count")) == 2,

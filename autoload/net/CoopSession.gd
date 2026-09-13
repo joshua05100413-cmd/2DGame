@@ -315,7 +315,9 @@ func _clear_spawned_nodes() -> void:
 ## 本机玩家每帧调用（由本地玩家节点驱动）。只有非权威端需要上报。
 func report_local_state(position: Vector2, flip: bool) -> void:
 	if not is_active():
+		_trace_once("report_inactive", "本机上报位置时 Coop 尚未激活，已忽略")
 		return
+	_trace_once("report_local", "本机开始上报位置")
 	if _is_host():
 		# 房主自己的位置直接进权威表，不必走网络。
 		_player_states[_net().get_unique_id()] = {"p": position, "flip": flip}
@@ -805,6 +807,7 @@ func _process(delta: float) -> void:
 
 
 func _broadcast_world_states() -> void:
+	_trace_once("broadcast", "房主开始广播世界状态（玩家 %d 怪物 %d）" % [_player_states.size(), _monster_nodes.size()])
 	if not _player_states.is_empty():
 		_sync_player_states.rpc(_player_states)
 	var monsters := _collect_monster_states()
@@ -848,6 +851,7 @@ func _broadcast_player_states() -> void:
 
 @rpc("authority", "call_remote", "unreliable_ordered")
 func _sync_player_states(snapshot: Dictionary) -> void:
+	_trace_once("sync_recv", "客户端收到房主广播的 %d 个玩家位置" % snapshot.size())
 	for raw_id in snapshot.keys():
 		var peer_id := int(raw_id)
 		# 自己的角色是本地预测的，不接受远端覆盖。
@@ -867,5 +871,19 @@ func get_player_state(peer_id: int) -> Dictionary:
 
 
 func _trace(message: String) -> void:
-	if verbose:
+	# 动态读 Net.verbose，而不是在 attach_world 时复制一份 —— 否则会话建立后
+	# 再打开日志开关就不生效了。
+	var n: Variant = _net()
+	if n != null and bool(n.get("verbose")):
 		print("[Coop] " + message)
+
+
+## 同一个键只打印一次。位置同步每秒 20 次，全打会淹掉日志。
+var _traced_once: Dictionary = {}
+
+
+func _trace_once(key: String, message: String) -> void:
+	if _traced_once.has(key):
+		return
+	_traced_once[key] = true
+	_trace(message)
