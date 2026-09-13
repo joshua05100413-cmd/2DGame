@@ -1,4 +1,9 @@
 extends SceneTree
+
+## 报告写到项目内的固定位置：Windows / Linux / CI 路径完全一致，脚本不必去猜
+## Godot 的 user:// 落在哪（Windows 是 %APPDATA%，Linux 是 $XDG_DATA_HOME）。
+const REPORT_DIR := "res://_userdata/reports"
+const REPORT_PATH := REPORT_DIR + "/coop_game_selftest.log"
 ## 真实关卡场景的联机集成自测。
 ##
 ## 与 tools/coop_selftest.gd 的分工
@@ -108,7 +113,8 @@ var _client_peer: int = 0
 
 
 func _initialize() -> void:
-	_log = FileAccess.open("user://coop_game_selftest.log", FileAccess.WRITE)
+	DirAccess.make_dir_recursive_absolute(REPORT_DIR)
+	_log = FileAccess.open(REPORT_PATH, FileAccess.WRITE)
 	_say("[gcoop] Godot " + str(Engine.get_version_info()["string"]))
 	_pending_start = true
 

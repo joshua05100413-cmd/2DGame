@@ -1,4 +1,9 @@
 extends SceneTree
+
+## 报告写到项目内的固定位置：Windows / Linux / CI 路径完全一致，脚本不必去猜
+## Godot 的 user:// 落在哪（Windows 是 %APPDATA%，Linux 是 $XDG_DATA_HOME）。
+const REPORT_DIR := "res://_userdata/reports"
+const REPORT_PATH := REPORT_DIR + "/net_selftest.log"
 ## 网络传输层无头自测（真 ENet 回环，不是 mock）。
 ##
 ## 验证目标
@@ -46,7 +51,8 @@ var _client_net: Node = null
 
 
 func _initialize() -> void:
-	_log = FileAccess.open("user://net_selftest.log", FileAccess.WRITE)
+	DirAccess.make_dir_recursive_absolute(REPORT_DIR)
+	_log = FileAccess.open(REPORT_PATH, FileAccess.WRITE)
 	_say("[net] Godot " + str(Engine.get_version_info()["string"]))
 	_say("[net] display=" + DisplayServer.get_name())
 	_static_checks()

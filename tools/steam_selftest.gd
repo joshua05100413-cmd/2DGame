@@ -1,4 +1,9 @@
 extends SceneTree
+
+## 报告写到项目内的固定位置：Windows / Linux / CI 路径完全一致，脚本不必去猜
+## Godot 的 user:// 落在哪（Windows 是 %APPDATA%，Linux 是 $XDG_DATA_HOME）。
+const REPORT_DIR := "res://_userdata/reports"
+const REPORT_PATH := REPORT_DIR + "/steam_selftest.log"
 ## Steam P2P 后端的无头自测。
 ##
 ## 本机没有（也不能有）GodotSteam GDExtension：仓库自带的那份是为更老的 Godot
@@ -75,7 +80,8 @@ var _fake_steam: FakeSteam = null
 
 
 func _initialize() -> void:
-	_log = FileAccess.open("user://steam_selftest.log", FileAccess.WRITE)
+	DirAccess.make_dir_recursive_absolute(REPORT_DIR)
+	_log = FileAccess.open(REPORT_PATH, FileAccess.WRITE)
 	_say("[steam] Godot " + str(Engine.get_version_info()["string"]))
 	_pending_start = true
 

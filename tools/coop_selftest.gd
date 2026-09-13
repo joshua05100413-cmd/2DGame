@@ -1,4 +1,9 @@
 extends SceneTree
+
+## 报告写到项目内的固定位置：Windows / Linux / CI 路径完全一致，脚本不必去猜
+## Godot 的 user:// 落在哪（Windows 是 %APPDATA%，Linux 是 $XDG_DATA_HOME）。
+const REPORT_DIR := "res://_userdata/reports"
+const REPORT_PATH := REPORT_DIR + "/coop_selftest.log"
 ## 合作生存复制协议的无头自测。
 ##
 ## 验证目标（全部走真实 ENet 回环，两个 MultiplayerAPI 在同一进程里）
@@ -151,7 +156,8 @@ var _late_beacon_id := 0
 
 
 func _initialize() -> void:
-	_log = FileAccess.open("user://coop_selftest.log", FileAccess.WRITE)
+	DirAccess.make_dir_recursive_absolute(REPORT_DIR)
+	_log = FileAccess.open(REPORT_PATH, FileAccess.WRITE)
 	_say("[coop] Godot " + str(Engine.get_version_info()["string"]))
 	# 和 net_selftest 一样：/root 在 _initialize() 阶段还没建立，
 	# 必须等到第一帧 _process 才能 set_multiplayer。

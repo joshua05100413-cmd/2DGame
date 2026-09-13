@@ -1,0 +1,90 @@
+name: Headless verification
+
+# Every change goes through the same suites the developers run locally through
+# tools/verify.bat (Windows) or tools/verify.sh (Linux/macOS).
+#
+# The point is not to duplicate local work: it is that four people editing
+# networking, gameplay and UI in parallel will break each other's assumptions.
+# The suites cover things a code review cannot see -- RPC ordering, roster
+# convergence, the single-player path still being a no-op -- and a crash
+# anywhere in the project (the harness audits CrashHandlerException too, so a
+# suite that dies half-way cannot report a false PASS).
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: 4.4-stable
+
+jobs:
+  verify:
+    name: Godot ${{ github.workflow }} headless suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache Godot binary
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.tool_cache }}/godot
+          key: godot-${{ env.GODOT_VERSION }}-linux-x86_64
+
+      - name: Fetch Godot
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ runner.tool_cache }}/godot"
+          cd "${{ runner.tool_cache }}/godot"
+          curl -fsSL -o godot.zip \
+            "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          unzip -q -o godot.zip
+          rm -f godot.zip
+          chmod +x "Godot_v${GODOT_VERSION}_linux.x86_64"
+
+      - name: Report engine version
+        run: |
+          export GODOT_EXE="${{ runner.tool_cache }}/godot/Godot_v${GODOT_VERSION}_linux.x86_64"
+          "$GODOT_EXE" --version
+
+      # compile + net + coop + lobby + coopgame + steam
+      - name: Run every headless suite
+        run: |
+          export GODOT_EXE="${{ runner.tool_cache }}/godot/Godot_v${GODOT_VERSION}_linux.x86_64"
+          bash tools/verify.sh 0 all
+
+      # Catches anything the suites miss by never touching the real scene graph.
+      - name: Boot the real main scene
+        run: |
+          export GODOT_EXE="${{ runner.tool_cache }}/godot/Godot_v${GODOT_VERSION}_linux.x86_64"
+          bash tools/verify.sh 300 game
+
+      # The audit self-check: this run injects a deliberate SCRIPT ERROR and
+      # MUST fail. If it ever passes, the harness has stopped detecting errors
+      # and every green build above is meaningless.
+      - name: Audit self-check (expected to fail)
+        run: |
+          export GODOT_EXE="${{ runner.tool_cache }}/godot/Godot_v${GODOT_VERSION}_linux.x86_64"
+          if bash tools/verify.sh 60 selftest; then
+            echo "::error::selftest PASSED but must FAIL - the audit is broken"
+            exit 1
+          fi
+          echo "OK: the harness correctly failed on an injected SCRIPT ERROR"
+
+      - name: Upload logs and reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-logs
+          path: |
+            _userdata/logs/
+            _userdata/reports/
+          if-no-files-found: ignore
+          retention-days: 7

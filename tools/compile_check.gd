@@ -15,6 +15,10 @@ extends SceneTree
 ##   godot --headless --path . --script res://tools/compile_check.gd
 ##   ... -- --out=D:/somewhere/report.txt
 
+## 报告写到项目内的固定位置，跨平台一致。
+const REPORT_DIR := "res://_userdata/reports"
+const REPORT_PATH := REPORT_DIR + "/compile_check.log"
+
 const SCAN_EXTENSIONS := [".gd", ".tscn", ".tres", ".gdshader"]
 ## Godot 3 时代的着色器扩展名。Godot 4 没有对应的 ResourceFormatLoader，
 ## 强行 load() 会以 "No loader found" 返回 null，所以只报告、不加载。
@@ -61,10 +65,13 @@ func _process(_delta: float) -> bool:
 
 
 func _open_log() -> FileAccess:
-	var path := "user://compile_check.log"
+	# 默认写到项目内的固定位置：Windows / Linux / CI 路径完全一致，脚本不必去
+	# 猜 Godot 的 user:// 落在哪（Windows 是 %APPDATA%，Linux 是 $XDG_DATA_HOME）。
+	var path := REPORT_PATH
 	for arg in OS.get_cmdline_user_args():
 		if arg.begins_with("--out="):
 			path = arg.trim_prefix("--out=")
+	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
 	var file := FileAccess.open(path, FileAccess.WRITE)
 	if file == null:
 		push_error("[compile] cannot open report file: " + path)

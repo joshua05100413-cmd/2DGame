@@ -1,4 +1,9 @@
 extends SceneTree
+
+## 报告写到项目内的固定位置：Windows / Linux / CI 路径完全一致，脚本不必去猜
+## Godot 的 user:// 落在哪（Windows 是 %APPDATA%，Linux 是 $XDG_DATA_HOME）。
+const REPORT_DIR := "res://_userdata/reports"
+const REPORT_PATH := REPORT_DIR + "/lobby_selftest.log"
 ## 联机大厅 UI 的无头自测。
 ##
 ## 验证目标
@@ -39,7 +44,8 @@ var _host_clicked := false
 
 
 func _initialize() -> void:
-	_log = FileAccess.open("user://lobby_selftest.log", FileAccess.WRITE)
+	DirAccess.make_dir_recursive_absolute(REPORT_DIR)
+	_log = FileAccess.open(REPORT_PATH, FileAccess.WRITE)
 	_say("[lobby] Godot " + str(Engine.get_version_info()["string"]))
 	# /root 在 _initialize() 阶段还没建立，UI 必须等第一帧。
 	_pending_start = true
