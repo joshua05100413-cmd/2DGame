@@ -110,6 +110,38 @@ func _verify_built() -> void:
 		"选中的后端应当与下拉项对应")
 
 	_verify_layout()
+	_verify_address_hint()
+
+
+## 房主该报哪个地址给队友。
+##
+## 这组是纯函数断言，不依赖真实网卡：只要「哪些地址能用」的判断错了，房主就会
+## 报一个对方连不上的 IP，而症状只是「一直连不上」，很难反查到是这里的问题。
+func _verify_address_hint() -> void:
+	# 回环和链路本地必须排除：127.0.0.1 只有同机双开能用，169.254 是没拿到
+	# DHCP 时的自分配地址，任何机器都连不上。
+	_check(not NetManager.is_lan_address("127.0.0.1"), "回环地址不应当作为可连接地址")
+	_check(not NetManager.is_lan_address("169.254.10.20"), "链路本地地址不应当作为可连接地址")
+	_check(not NetManager.is_lan_address("::1"), "IPv6 不应当出现在 IPv4 候选里")
+	_check(not NetManager.is_lan_address(""), "空串不应当作为可连接地址")
+	_check(not NetManager.is_lan_address("192.168.1"), "段数不足的地址应当被拒绝")
+	_check(not NetManager.is_lan_address("192.168.1.999"), "超出 255 的地址应当被拒绝")
+	_check(NetManager.is_lan_address("192.168.1.7"), "正常内网地址应当被接受")
+
+	_check(NetManager.is_private_address("10.0.0.5"), "10/8 应当算私有网段")
+	_check(NetManager.is_private_address("172.16.3.9"), "172.16/12 下界应当算私有网段")
+	_check(NetManager.is_private_address("172.31.255.1"), "172.16/12 上界应当算私有网段")
+	_check(not NetManager.is_private_address("172.32.0.1"), "172.32 已经出了 172.16/12")
+	_check(not NetManager.is_private_address("8.8.8.8"), "公网地址不算私有网段")
+
+	# 候选表里绝不能出现回环地址，否则房主可能照着念 127.0.0.1。
+	var candidates: Array = NetManager.local_address_candidates()
+	var has_loopback := false
+	for address in candidates:
+		if str(address).begins_with("127."):
+			has_loopback = true
+	_check(not has_loopback, "候选地址里不应当出现回环地址，实际 " + str(candidates))
+	_say("[lobby] 本机候选地址：" + str(candidates) + " 提示语：" + NetManager.local_address_hint())
 
 
 ## 布局/可见性断言。
@@ -190,6 +222,16 @@ func _tick_host() -> void:
 	_check(status != null and not status.text.is_empty(), "开房后状态栏应当有提示文字")
 	if status != null:
 		_say("[lobby] 开房状态：" + status.text)
+
+	# 开房状态栏比默认提示长得多（要写出本机地址），而面板里塞不下就会被顶到
+	# 屏幕外——「返回」按钮被挤出屏幕正是之前踩过的坑。所以这里必须在**真实
+	# 开了房、状态栏换成最长文案之后**重新量一遍，而不是只看构建时那一次。
+	var panel := _lobby.get("_panel") as Panel
+	if panel != null:
+		var panel_rect := Rect2(panel.global_position, panel.size)
+		var screen := Rect2(Vector2.ZERO, _lobby.get_viewport_rect().size)
+		_check(screen.encloses(panel_rect),
+			"开房后（状态栏变长）面板仍应完整位于屏幕内。面板 %s，屏幕 %s" % [str(panel_rect), str(screen)])
 
 	var host_button := _lobby.get("_host_button") as Button
 	var leave_button := _lobby.get("_leave_button") as Button

@@ -107,8 +107,30 @@ func host_game() -> void:
 	_set_status("正在开房……", Color(0.9, 0.9, 0.6))
 	var err: int = net.host_game(_read_port())
 	if err == OK:
-		_set_status("已开房，等待队友加入（端口 %d）" % _read_port(), Color(0.6, 1.0, 0.7))
+		_set_status(_hosting_status(_read_port()), Color(0.6, 1.0, 0.7))
 	_refresh_players()
+
+
+## 开房成功后状态栏该写什么。
+##
+## 必须把本机地址写出来：ENet 是直连后端，队友要填房主的 IP，而房主自己看不到
+## 自己该报什么。以前这里只写端口，跨机器测试时房主只能靠猜或者另外去查 ipconfig。
+##
+## 两种连法分开写：同一台电脑双开填 127.0.0.1，别的电脑必须填内网地址。
+## 不写清楚的话，房主很可能把 127.0.0.1 报给不在本机的人，对方会一直连到超时。
+##
+## 这段话很短是故意的：大厅状态栏的字体只有 7px，viewport 逻辑宽度只有 410px，
+## 多写两行就会把下面的成员列表和按钮挤出屏幕。
+func _hosting_status(port: int) -> String:
+	var address := NetManager.local_address_hint()
+	if address.is_empty():
+		return "已开房 %d ｜ 无网卡地址，仅可本机双开" % port
+	var text := "已开房 %s:%d ｜ 本机双开填 127.0.0.1" % [address, port]
+	# 这台机器有几块网卡时，最优地址不一定就是能连通的那块，所以要房主知道还有备选。
+	var extra := NetManager.extra_address_count()
+	if extra > 0:
+		text += "（另有 %d 个网卡地址）" % extra
+	return text
 
 
 func join_game() -> void:

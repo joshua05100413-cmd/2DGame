@@ -43,6 +43,13 @@ const DEFAULT_MAX_CLIENTS := 8
 ## 玩家名长度上限，避免 RPC 负载过大。
 const MAX_NAME_LENGTH := 16
 
+## 网卡名里出现这些词的基本都是虚拟机/隧道，队友按它连一般连不上。
+## 放在最后当作兜底候选，而不是直接丢掉——某些精简系统上真实网卡也可能叫得怪。
+const VIRTUAL_ADAPTER_HINTS := [
+	"vmware", "virtualbox", "vethernet", "hyper-v", "loopback",
+	"bluetooth", "docker", "tap", "wintun", "npcap",
+]
+
 ## 当前选中的后端（[enum TransportFactory.Backend]）。
 var backend: int = TransportFactory.Backend.ENET
 ## 当前传输层实例；未联机时为 null。
@@ -133,6 +140,111 @@ func get_unique_id() -> int:
 ## 权威方 peer id。
 func get_server_id() -> int:
 	return transport.get_server_id() if transport != null else 1
+
+
+## 列出本机可以报给队友的 IPv4 地址，最可能连通的排在最前面。
+##
+## 为什么需要这个：ENet 是直连后端，客户端要填房主的地址，而**房主自己看不到
+## 该报什么**。本机双开填 127.0.0.1 就行，一旦换成两台机器，回环地址立刻失效，
+## 必须报内网地址——而内网地址会随网卡、随换网变化，房主没法凭记忆填对。
+##
+## 排序依据（从优到劣）：
+##   1. 真实网卡的私有地址（10./172.16-31./192.168.）——同局域网直接可用
+##   2. 其它真实网卡地址
+##   3. 虚拟网卡地址——只有当双方都在同一个虚拟局域网里时才有用
+##
+## 用 [method IP.get_local_interfaces] 而不是 [method IP.get_local_addresses]，
+## 因为只有前者能拿到网卡名，而「是不是虚拟机」这个判断只能靠名字。
+static func local_address_candidates() -> Array:
+	# 用字典按地址去重：一块网卡可以有多个地址，多块网卡也可能重复。
+	var seen: Dictionary = {}
+	var private_real: Array = []
+	var other_real: Array = []
+	var virtual: Array = []
+
+	var interfaces: Array = IP.get_local_interfaces()
+	for entry in interfaces:
+		var info: Dictionary = entry
+		var adapter_name: String = info.get("name", "")
+		var addresses: PackedStringArray = info.get("addresses", PackedStringArray())
+		var is_virtual := _looks_virtual(adapter_name)
+		for address in addresses:
+			if not is_lan_address(address) or seen.has(address):
+				continue
+			seen[address] = true
+			# 三个桶分开收，最后按优先级拼接。不要塞进一个数组再排序：
+			# 网卡枚举顺序本身没有保证，混在一起就没法稳定地把虚拟网卡压到后面。
+			if is_virtual:
+				virtual.append(address)
+			elif is_private_address(address):
+				private_real.append(address)
+			else:
+				other_real.append(address)
+
+	var result: Array = []
+	result.append_array(private_real)
+	result.append_array(other_real)
+	result.append_array(virtual)
+	return result
+
+
+## 最值得报给队友的那个本机地址；一个都没有时返回空串（例如完全没联网）。
+##
+## 只返回地址本身，不带任何修饰。以前这里顺手拼了「（另有 N 个地址）」，
+## 结果在大厅里显示成 `10.236.7.166（另有 2 个地址）:27015`——看着像端口号的一部分。
+## 计数交给调用方补在句子末尾。
+static func local_address_hint() -> String:
+	var candidates := local_address_candidates()
+	if candidates.is_empty():
+		return ""
+	return str(candidates[0])
+
+
+## 除最优地址之外还有几个候选网卡地址。房主可能要挨个试，所以要报出来。
+static func extra_address_count() -> int:
+	return maxi(local_address_candidates().size() - 1, 0)
+
+
+## 能不能拿来当连接目标：必须是 IPv4，且不是回环/链路本地。
+static func is_lan_address(address: String) -> bool:
+	if address.is_empty() or address.contains(":"):
+		return false
+	if address.begins_with("127.") or address.begins_with("169.254."):
+		return false
+	var parts := address.split(".")
+	if parts.size() != 4:
+		return false
+	for part in parts:
+		if not part.is_valid_int():
+			return false
+		var value := int(part)
+		if value < 0 or value > 255:
+			return false
+	return true
+
+
+## RFC1918 私有网段。这些地址在同一个局域网里可直接互连。
+static func is_private_address(address: String) -> bool:
+	var parts := address.split(".")
+	if parts.size() != 4:
+		return false
+	var first := int(parts[0])
+	var second := int(parts[1])
+	if first == 10:
+		return true
+	if first == 192 and second == 168:
+		return true
+	if first == 172 and second >= 16 and second <= 31:
+		return true
+	return false
+
+
+static func _looks_virtual(adapter_name: String) -> bool:
+	var lowered := adapter_name.to_lower()
+	for hint in VIRTUAL_ADAPTER_HINTS:
+		if lowered.contains(hint):
+			return true
+	return false
 
 
 func get_player_name(peer_id: int) -> String:
