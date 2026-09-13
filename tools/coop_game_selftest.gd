@@ -283,6 +283,16 @@ func _verify_host_players() -> void:
 	_check(client_sees_host != null and not bool(client_sees_host.get("is_local")),
 		"客户端上的房主应当是远端代理")
 
+	# 两端必须从同一个出生点开始，否则玩家互相看不见 —— 这就是踩过的坑：
+	# 房主留在场景预置 Hero 的位置，客户端生成在 PositionHome，两边隔了半张地图。
+	var host_self: Node = _host_coop.call("get_player_node", host_id)
+	if host_self != null and client_self != null:
+		_say("[gcoop] 房主本机玩家位置=%s 客户端本机玩家位置=%s" % [
+			str(host_self.global_position), str(client_self.global_position)])
+		_check(host_self.global_position.is_equal_approx(client_self.global_position),
+			"两端本机玩家应当从同一个出生点开始：房主 %s vs 客户端 %s" % [
+				str(host_self.global_position), str(client_self.global_position)])
+
 
 ## 取节点脚本的资源路径，用于避开类名引用。
 func _script_path(node: Node) -> String:

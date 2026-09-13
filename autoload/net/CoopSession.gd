@@ -251,12 +251,12 @@ func _spawn_player(peer_id: int, spawn_pos: Vector2, player_name: String) -> voi
 	if node == null:
 		return
 	node.name = "P%d" % peer_id
-	if is_local:
-		# 预置节点已经有自己的位置，不要把它拽到出生点。
-		if node.get_parent() == null:
-			node.global_position = spawn_pos
-	else:
-		node.global_position = spawn_pos
+	# 联机时**所有**玩家都从同一个出生点开始，包括场景预置的那个 Hero。
+	#
+	# 这里踩过一次坑：原先特意保留预置 Hero 的原位置（「它已经有自己的位置」），
+	# 结果房主留在 TileMap2/PlayerRoot/Hero，客户端却生成在 PositionHome ——
+	# 两个点不在一起，两端隔着大半张地图，互相看不见对方。
+	node.global_position = spawn_pos
 	if is_local:
 		if node.has_method("mark_as_local_player"):
 			node.call("mark_as_local_player", peer_id)
